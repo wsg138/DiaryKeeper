@@ -14,6 +14,8 @@ admin:
   usage-reload: "&e/diary reload"
   usage-issue: "&e/diary issue <player|uuid> &7- issue if never issued before"
   usage-status: "&e/diary status <player|uuid> &7- show issuance and queue state"
+  usage-find: "&e/diary find <player|uuid|diaryId> &7- show the last tracked location"
+  usage-restore: "&e/diary restore <player|uuid|diaryId> &7- restore from the saved snapshot"
   issue-usage: "&cUsage: /diary issue <player|uuid>"
   issue-success: "&aIssued a diary to &e{player}&a."
   issue-queued: "&aIssued a diary to &e{player}&a and queued it for delivery."
@@ -23,3 +25,20 @@ admin:
   status-issued: "&eIssued: &f{issued}"
   status-diary-id: "&eDiary ID: &f{id}"
   status-queued: "&eQueued Deliveries: &f{count}"
+
+find:
+  usage: "&cUsage: /diary find <player|uuid|diaryId>"
+  not-found: "&cNo tracked diary record was found for that query."
+  result-owner: "&eOwner: &f{player}"
+  result-id: "&eDiary ID: &f{id}"
+  result-location: "&eLast Known Location: &f{location}"
+
+restore:
+  usage: "&cUsage: /diary restore <player|uuid|diaryId>"
+  not-found: "&cNo restorable diary snapshot was found for that query."
+  player-only-confirm: "&cIf a tracked copy already exists, restore confirmation must be done in-game."
+  gui-opened: "&eRestore confirmation opened."
+  replace-failed: "&cThe tracked copy could not be safely removed right now. Load the area or choose a second-copy restore."
+  replace-success: "&aThe tracked copy was removed or queued for removal, and the diary was restored."
+  spawn-second-success: "&aA second copy of the diary was restored."
+  direct-success: "&aThe diary was restored from the saved snapshot."

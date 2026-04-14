@@ -4,6 +4,7 @@ import com.p2wn.diary.data.DeliveryReason;
 import com.p2wn.diary.data.DiaryStore;
 import com.p2wn.diary.data.PendingDelivery;
 import org.bukkit.Bukkit;
+import org.bukkit.OfflinePlayer;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.Plugin;
@@ -19,6 +20,7 @@ public final class DeliveryService {
     private final DiaryStore diaryStore;
     private BukkitTask task;
     private DiaryService diaryService;
+    private DiaryTrackerService trackerService;
 
     public DeliveryService(Plugin plugin, DiaryStore diaryStore) {
         this.plugin = plugin;
@@ -29,8 +31,17 @@ public final class DeliveryService {
         this.diaryService = diaryService;
     }
 
+    public void setTrackerService(DiaryTrackerService trackerService) {
+        this.trackerService = trackerService;
+    }
+
     public void queue(UUID playerId, DeliveryReason reason, ItemStack item) {
         diaryStore.queueDelivery(playerId, reason, item);
+        if (trackerService != null) {
+            OfflinePlayer offlinePlayer = Bukkit.getOfflinePlayer(playerId);
+            String playerName = offlinePlayer.getName() != null ? offlinePlayer.getName() : playerId.toString();
+            trackerService.trackQueuedDelivery(playerId, playerName, item);
+        }
         requestDelivery(playerId);
     }
 
@@ -108,6 +119,9 @@ public final class DeliveryService {
 
             if (deliveredCount > 0) {
                 diaryStore.removeFirstPendingDeliveries(playerId, deliveredCount);
+                if (trackerService != null) {
+                    trackerService.trackPlayerInventory(player);
+                }
                 diaryService.refreshOwnedDiaries(player);
             }
 

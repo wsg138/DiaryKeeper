@@ -31,11 +31,19 @@ public final class DiaryStore {
         private String diaryId;
         private Long issuedAt;
         private final Deque<PendingDelivery> pendingDeliveries = new ArrayDeque<>();
+        private final Deque<PendingRemoval> pendingRemovals = new ArrayDeque<>();
+    }
+
+    private static final class DiaryRecordState {
+        private UUID ownerUuid;
+        private ItemStack snapshot;
+        private DiaryLocationRecord location;
     }
 
     private final Plugin plugin;
     private final File file;
     private final Map<UUID, PlayerRecord> records = new HashMap<>();
+    private final Map<String, DiaryRecordState> diaryRecords = new HashMap<>();
 
     private String lastWorldUid;
     private boolean dirty;
@@ -48,73 +56,18 @@ public final class DiaryStore {
 
     public void load() {
         records.clear();
+        diaryRecords.clear();
         lastWorldUid = null;
         dirty = false;
 
         FileConfiguration data = YamlConfiguration.loadConfiguration(file);
         lastWorldUid = data.getString("lastWorldUid");
 
-        ConfigurationSection players = data.getConfigurationSection("players");
-        if (players != null) {
-            for (String key : players.getKeys(false)) {
-                UUID uuid = parseUuid(key);
-                if (uuid == null) {
-                    continue;
-                }
-
-                PlayerRecord record = getOrCreateRecord(uuid);
-                record.diaryId = players.getString(key + ".id");
-                long issuedAt = players.getLong(key + ".issuedAt", 0L);
-                if (issuedAt > 0L) {
-                    record.issuedAt = issuedAt;
-                }
-            }
-        }
-
-        ConfigurationSection pending = data.getConfigurationSection("pendingDeliveries");
-        if (pending != null) {
-            for (String key : pending.getKeys(false)) {
-                UUID uuid = parseUuid(key);
-                if (uuid == null) {
-                    continue;
-                }
-                ConfigurationSection entries = pending.getConfigurationSection(key);
-                if (entries == null) {
-                    continue;
-                }
-                PlayerRecord record = getOrCreateRecord(uuid);
-                List<String> orderedKeys = new ArrayList<>(entries.getKeys(false));
-                orderedKeys.sort(String::compareTo);
-                for (String entryKey : orderedKeys) {
-                    String basePath = key + "." + entryKey;
-                    String rawReason = pending.getString(basePath + ".reason", DeliveryReason.VOID_RETURN.name());
-                    ItemStack item = pending.getItemStack(basePath + ".item");
-                    if (item == null) {
-                        continue;
-                    }
-                    record.pendingDeliveries.addLast(new PendingDelivery(parseReason(rawReason), item));
-                }
-            }
-        }
-
-        ConfigurationSection legacyVoidQueue = data.getConfigurationSection("voidQueue");
-        if (legacyVoidQueue != null) {
-            for (String key : legacyVoidQueue.getKeys(false)) {
-                UUID uuid = parseUuid(key);
-                if (uuid == null) {
-                    continue;
-                }
-                PlayerRecord record = getOrCreateRecord(uuid);
-                for (String encoded : legacyVoidQueue.getStringList(key)) {
-                    try {
-                        ItemStack stack = ItemIO.fromBase64(encoded);
-                        record.pendingDeliveries.addLast(new PendingDelivery(DeliveryReason.VOID_RETURN, stack));
-                    } catch (IOException ex) {
-                        plugin.getLogger().warning("Failed to deserialize legacy queued diary for " + uuid + ": " + ex.getMessage());
-                    }
-                }
-            }
-        }
+        loadPlayers(data.getConfigurationSection("players"));
+        loadPendingDeliveries(data);
+        loadPendingRemovals(data.getConfigurationSection("pendingRemovals"));
+        loadTrackedDiaries(data.getConfigurationSection("trackedDiaries"));
+        loadLegacyVoidQueue(data.getConfigurationSection("voidQueue"));
     }
 
     public void reloadAutosave() {
@@ -141,6 +94,7 @@ public final class DiaryStore {
 
     public void resetAllPlayers() {
         records.clear();
+        diaryRecords.clear();
         markDirty();
     }
 
@@ -190,13 +144,11 @@ public final class DiaryStore {
         if (record == null || record.pendingDeliveries.isEmpty() || limit <= 0) {
             return Collections.emptyList();
         }
-
         List<PendingDelivery> results = new ArrayList<>(Math.min(limit, record.pendingDeliveries.size()));
         int count = 0;
         for (PendingDelivery delivery : record.pendingDeliveries) {
             results.add(delivery.copy());
-            count++;
-            if (count >= limit) {
+            if (++count >= limit) {
                 break;
             }
         }
@@ -217,6 +169,18 @@ public final class DiaryStore {
         markDirty();
     }
 
+    public boolean removePendingDeliveriesByDiaryId(UUID playerId, String diaryId) {
+        PlayerRecord record = records.get(playerId);
+        if (record == null || record.pendingDeliveries.isEmpty()) {
+            return false;
+        }
+        boolean removed = record.pendingDeliveries.removeIf(delivery -> diaryId.equals(extractDiaryId(delivery.item())));
+        if (removed) {
+            markDirty();
+        }
+        return removed;
+    }
+
     public int getPendingDeliveryCount(UUID playerId) {
         PlayerRecord record = records.get(playerId);
         return record == null ? 0 : record.pendingDeliveries.size();
@@ -232,6 +196,76 @@ public final class DiaryStore {
         return results;
     }
 
+    public void queuePendingRemoval(UUID playerId, PendingRemoval pendingRemoval) {
+        PlayerRecord record = getOrCreateRecord(playerId);
+        record.pendingRemovals.addLast(pendingRemoval);
+        markDirty();
+    }
+
+    public List<PendingRemoval> getPendingRemovals(UUID playerId) {
+        PlayerRecord record = records.get(playerId);
+        if (record == null || record.pendingRemovals.isEmpty()) {
+            return Collections.emptyList();
+        }
+        return List.copyOf(record.pendingRemovals);
+    }
+
+    public void clearPendingRemovals(UUID playerId) {
+        PlayerRecord record = records.get(playerId);
+        if (record == null || record.pendingRemovals.isEmpty()) {
+            return;
+        }
+        record.pendingRemovals.clear();
+        markDirty();
+    }
+
+    public void updateTrackedDiary(String diaryId, UUID ownerUuid, ItemStack snapshot, DiaryLocationRecord location) {
+        if (diaryId == null || snapshot == null) {
+            return;
+        }
+        DiaryRecordState state = diaryRecords.computeIfAbsent(diaryId, ignored -> new DiaryRecordState());
+        state.ownerUuid = ownerUuid;
+        state.snapshot = snapshot.clone();
+        state.location = location;
+        markDirty();
+    }
+
+    public TrackedDiaryRecord getTrackedDiary(String diaryId) {
+        DiaryRecordState state = diaryRecords.get(diaryId);
+        if (state == null) {
+            return null;
+        }
+        return new TrackedDiaryRecord(diaryId, state.ownerUuid, state.snapshot == null ? null : state.snapshot.clone(), state.location);
+    }
+
+    public String findDiaryIdByOwner(UUID ownerUuid) {
+        PlayerRecord record = records.get(ownerUuid);
+        return record == null ? null : record.diaryId;
+    }
+
+    public String findDiaryIdByExactOrPrefix(String query) {
+        if (query == null || query.isBlank()) {
+            return null;
+        }
+        if (diaryRecords.containsKey(query)) {
+            return query;
+        }
+        String exactPlayerDiary = findDiaryIdByPlayerQuery(query);
+        if (exactPlayerDiary != null) {
+            return exactPlayerDiary;
+        }
+        for (String diaryId : diaryRecords.keySet()) {
+            if (diaryId.startsWith(query)) {
+                return diaryId;
+            }
+        }
+        return null;
+    }
+
+    public Set<UUID> getTrackedOwners() {
+        return Set.copyOf(records.keySet());
+    }
+
     public void flushIfDirty() {
         if (dirty) {
             flushNow();
@@ -243,20 +277,41 @@ public final class DiaryStore {
         data.set("lastWorldUid", lastWorldUid);
 
         for (Map.Entry<UUID, PlayerRecord> entry : records.entrySet()) {
+            String playerKey = entry.getKey().toString();
             PlayerRecord record = entry.getValue();
-            String key = entry.getKey().toString();
+
             if (record.diaryId != null) {
-                data.set("players." + key + ".id", record.diaryId);
+                data.set("players." + playerKey + ".id", record.diaryId);
             }
             if (record.issuedAt != null) {
-                data.set("players." + key + ".issuedAt", record.issuedAt);
+                data.set("players." + playerKey + ".issuedAt", record.issuedAt);
             }
 
-            int index = 0;
+            int deliveryIndex = 0;
             for (PendingDelivery delivery : record.pendingDeliveries) {
-                String basePath = "pendingDeliveries." + key + "." + index++;
+                String basePath = "pendingDeliveries." + playerKey + "." + deliveryIndex++;
                 data.set(basePath + ".reason", delivery.reason().name());
                 data.set(basePath + ".item", delivery.item());
+            }
+
+            int removalIndex = 0;
+            for (PendingRemoval pendingRemoval : record.pendingRemovals) {
+                String basePath = "pendingRemovals." + playerKey + "." + removalIndex++;
+                data.set(basePath + ".diaryId", pendingRemoval.diaryId());
+                data.set(basePath + ".locationType", pendingRemoval.locationType().name());
+                data.set(basePath + ".holderUuid", pendingRemoval.holderUuid() == null ? null : pendingRemoval.holderUuid().toString());
+            }
+        }
+
+        for (Map.Entry<String, DiaryRecordState> entry : diaryRecords.entrySet()) {
+            String diaryId = entry.getKey();
+            DiaryRecordState state = entry.getValue();
+            String basePath = "trackedDiaries." + diaryId;
+            data.set(basePath + ".ownerUuid", state.ownerUuid == null ? null : state.ownerUuid.toString());
+            data.set(basePath + ".snapshot", state.snapshot);
+            if (state.location != null) {
+                ConfigurationSection locationSection = data.createSection(basePath + ".location");
+                state.location.writeTo(locationSection);
             }
         }
 
@@ -265,6 +320,123 @@ public final class DiaryStore {
             dirty = false;
         } catch (IOException ex) {
             plugin.getLogger().warning("Failed to save diaries.yml: " + ex.getMessage());
+        }
+    }
+
+    private void loadPlayers(ConfigurationSection players) {
+        if (players == null) {
+            return;
+        }
+        for (String key : players.getKeys(false)) {
+            UUID uuid = parseUuid(key);
+            if (uuid == null) {
+                continue;
+            }
+            PlayerRecord record = getOrCreateRecord(uuid);
+            record.diaryId = players.getString(key + ".id");
+            long issuedAt = players.getLong(key + ".issuedAt", 0L);
+            if (issuedAt > 0L) {
+                record.issuedAt = issuedAt;
+            }
+        }
+    }
+
+    private void loadPendingDeliveries(FileConfiguration data) {
+        ConfigurationSection pending = data.getConfigurationSection("pendingDeliveries");
+        if (pending != null) {
+            for (String key : pending.getKeys(false)) {
+                UUID uuid = parseUuid(key);
+                if (uuid == null) {
+                    continue;
+                }
+                ConfigurationSection entries = pending.getConfigurationSection(key);
+                if (entries == null) {
+                    continue;
+                }
+                PlayerRecord record = getOrCreateRecord(uuid);
+                List<String> orderedKeys = new ArrayList<>(entries.getKeys(false));
+                orderedKeys.sort(String::compareTo);
+                for (String entryKey : orderedKeys) {
+                    String basePath = key + "." + entryKey;
+                    String rawReason = pending.getString(basePath + ".reason", DeliveryReason.VOID_RETURN.name());
+                    ItemStack item = pending.getItemStack(basePath + ".item");
+                    if (item != null) {
+                        record.pendingDeliveries.addLast(new PendingDelivery(parseReason(rawReason), item));
+                    }
+                }
+            }
+        }
+    }
+
+    private void loadPendingRemovals(ConfigurationSection pendingRemovalsSection) {
+        if (pendingRemovalsSection == null) {
+            return;
+        }
+        for (String key : pendingRemovalsSection.getKeys(false)) {
+            UUID uuid = parseUuid(key);
+            if (uuid == null) {
+                continue;
+            }
+            ConfigurationSection entries = pendingRemovalsSection.getConfigurationSection(key);
+            if (entries == null) {
+                continue;
+            }
+            PlayerRecord record = getOrCreateRecord(uuid);
+            List<String> orderedKeys = new ArrayList<>(entries.getKeys(false));
+            orderedKeys.sort(String::compareTo);
+            for (String entryKey : orderedKeys) {
+                String basePath = key + "." + entryKey;
+                String diaryId = pendingRemovalsSection.getString(basePath + ".diaryId");
+                String locationType = pendingRemovalsSection.getString(basePath + ".locationType", DiaryLocationType.UNKNOWN.name());
+                if (diaryId != null) {
+                    record.pendingRemovals.addLast(new PendingRemoval(
+                            diaryId,
+                            DiaryLocationType.valueOf(locationType.toUpperCase(Locale.ROOT)),
+                            parseUuid(pendingRemovalsSection.getString(basePath + ".holderUuid"))
+                    ));
+                }
+            }
+        }
+    }
+
+    private void loadTrackedDiaries(ConfigurationSection trackedDiariesSection) {
+        if (trackedDiariesSection == null) {
+            return;
+        }
+        for (String diaryId : trackedDiariesSection.getKeys(false)) {
+            ConfigurationSection section = trackedDiariesSection.getConfigurationSection(diaryId);
+            if (section == null) {
+                continue;
+            }
+            DiaryRecordState state = new DiaryRecordState();
+            state.ownerUuid = parseUuid(section.getString("ownerUuid"));
+            state.snapshot = section.getItemStack("snapshot");
+            ConfigurationSection locationSection = section.getConfigurationSection("location");
+            if (locationSection != null) {
+                state.location = DiaryLocationRecord.readFrom(locationSection);
+            }
+            diaryRecords.put(diaryId, state);
+        }
+    }
+
+    private void loadLegacyVoidQueue(ConfigurationSection legacyVoidQueue) {
+        if (legacyVoidQueue == null) {
+            return;
+        }
+        for (String key : legacyVoidQueue.getKeys(false)) {
+            UUID uuid = parseUuid(key);
+            if (uuid == null) {
+                continue;
+            }
+            PlayerRecord record = getOrCreateRecord(uuid);
+            for (String encoded : legacyVoidQueue.getStringList(key)) {
+                try {
+                    ItemStack stack = ItemIO.fromBase64(encoded);
+                    record.pendingDeliveries.addLast(new PendingDelivery(DeliveryReason.VOID_RETURN, stack));
+                } catch (IOException ex) {
+                    plugin.getLogger().warning("Failed to deserialize legacy queued diary for " + uuid + ": " + ex.getMessage());
+                }
+            }
         }
     }
 
@@ -285,7 +457,7 @@ public final class DiaryStore {
 
     private UUID parseUuid(String input) {
         try {
-            return UUID.fromString(input);
+            return input == null ? null : UUID.fromString(input);
         } catch (IllegalArgumentException ex) {
             return null;
         }
@@ -297,5 +469,26 @@ public final class DiaryStore {
         } catch (IllegalArgumentException ex) {
             return DeliveryReason.VOID_RETURN;
         }
+    }
+
+    private String findDiaryIdByPlayerQuery(String query) {
+        UUID uuid = parseUuid(query);
+        if (uuid != null) {
+            return getDiaryId(uuid);
+        }
+        return null;
+    }
+
+    private String extractDiaryId(ItemStack item) {
+        if (item == null || !item.hasItemMeta()) {
+            return null;
+        }
+        var pdc = item.getItemMeta().getPersistentDataContainer();
+        for (org.bukkit.NamespacedKey key : pdc.getKeys()) {
+            if ("diary_id".equals(key.getKey())) {
+                return pdc.get(key, org.bukkit.persistence.PersistentDataType.STRING);
+            }
+        }
+        return null;
     }
 }

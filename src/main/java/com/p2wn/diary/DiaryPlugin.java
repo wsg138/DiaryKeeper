@@ -7,6 +7,7 @@ import com.p2wn.diary.item.DiaryItem;
 import com.p2wn.diary.listeners.AnvilGuardListener;
 import com.p2wn.diary.listeners.BundleGuardListener;
 import com.p2wn.diary.listeners.ContainerGuardListener;
+import com.p2wn.diary.listeners.DiaryTrackingListener;
 import com.p2wn.diary.listeners.DropTrackListener;
 import com.p2wn.diary.listeners.EditListener;
 import com.p2wn.diary.listeners.EnderChestGuardListener;
@@ -15,9 +16,12 @@ import com.p2wn.diary.listeners.InventoryOpenListener;
 import com.p2wn.diary.listeners.ItemProtectionListener;
 import com.p2wn.diary.listeners.JoinListener;
 import com.p2wn.diary.listeners.MetaGuardListener;
+import com.p2wn.diary.listeners.RestoreGuiListener;
 import com.p2wn.diary.listeners.ShulkerGuardListener;
 import com.p2wn.diary.logic.DeliveryService;
+import com.p2wn.diary.logic.DiaryRestoreService;
 import com.p2wn.diary.logic.DiaryService;
+import com.p2wn.diary.logic.DiaryTrackerService;
 import com.p2wn.diary.logic.DuplicateWatcher;
 import com.p2wn.diary.logic.RestrictionService;
 import com.p2wn.diary.logic.VoidWatcher;
@@ -39,6 +43,9 @@ public final class DiaryPlugin extends JavaPlugin {
     private DeliveryService deliveryService;
     private VoidWatcher voidWatcher;
     private DiaryService diaryService;
+    private DiaryTrackerService diaryTrackerService;
+    private DiaryRestoreService diaryRestoreService;
+    private RestoreGuiListener restoreGuiListener;
 
     @Override
     public void onEnable() {
@@ -53,14 +60,20 @@ public final class DiaryPlugin extends JavaPlugin {
         handleWorldReset();
 
         diaryItem = new DiaryItem(configManager, diaryStore, diaryKeys);
+        diaryTrackerService = new DiaryTrackerService(diaryStore, diaryItem);
         duplicateWatcher = new DuplicateWatcher(this, configManager, diaryItem);
         deliveryService = new DeliveryService(this, diaryStore);
         diaryService = new DiaryService(this, configManager, diaryStore, diaryItem, deliveryService);
         restrictionService = new RestrictionService(configManager, diaryItem);
         voidWatcher = new VoidWatcher(this, configManager, diaryItem, deliveryService, duplicateWatcher);
+        diaryRestoreService = new DiaryRestoreService(configManager, diaryStore, diaryItem, diaryService, deliveryService, diaryTrackerService);
+        restoreGuiListener = new RestoreGuiListener(this);
 
         diaryService.setDuplicateWatcher(duplicateWatcher);
+        diaryService.setTrackerService(diaryTrackerService);
+        diaryService.setRestoreService(diaryRestoreService);
         deliveryService.setDiaryService(diaryService);
+        deliveryService.setTrackerService(diaryTrackerService);
 
         registerCommand();
         registerListeners();
@@ -129,6 +142,18 @@ public final class DiaryPlugin extends JavaPlugin {
         return diaryService;
     }
 
+    public DiaryTrackerService diaryTrackerService() {
+        return diaryTrackerService;
+    }
+
+    public DiaryRestoreService diaryRestoreService() {
+        return diaryRestoreService;
+    }
+
+    public RestoreGuiListener restoreGuiListener() {
+        return restoreGuiListener;
+    }
+
     private void handleWorldReset() {
         World mainWorld = Bukkit.getWorlds().isEmpty() ? null : Bukkit.getWorlds().get(0);
         if (mainWorld == null) {
@@ -162,6 +187,7 @@ public final class DiaryPlugin extends JavaPlugin {
         pluginManager.registerEvents(new InventoryOpenListener(this), this);
         pluginManager.registerEvents(new ItemProtectionListener(this), this);
         pluginManager.registerEvents(new DropTrackListener(this), this);
+        pluginManager.registerEvents(new DiaryTrackingListener(this), this);
         pluginManager.registerEvents(new AnvilGuardListener(this), this);
         pluginManager.registerEvents(new GrindstoneGuardListener(this), this);
         pluginManager.registerEvents(new MetaGuardListener(this), this);
@@ -169,5 +195,6 @@ public final class DiaryPlugin extends JavaPlugin {
         pluginManager.registerEvents(new BundleGuardListener(this), this);
         pluginManager.registerEvents(new ShulkerGuardListener(this), this);
         pluginManager.registerEvents(new ContainerGuardListener(this), this);
+        pluginManager.registerEvents(restoreGuiListener, this);
     }
 }

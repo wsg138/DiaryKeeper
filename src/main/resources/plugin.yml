@@ -7,7 +7,7 @@ description: One-of-a-kind, owner-editable collectible diaries with safe queuein
 commands:
   diary:
     description: Diary admin
-    usage: /diary <reload|issue <player|uuid>|status <player|uuid>>
+    usage: /diary <reload|issue <player|uuid>|status <player|uuid>|find <player|uuid|diaryId>|restore <player|uuid|diaryId>>
     permission: diary.admin
 
 permissions:

@@ -40,6 +40,8 @@ public final class DiaryService {
     private final DiaryItem diaryItem;
     private final DeliveryService deliveryService;
     private final Plugin plugin;
+    private DiaryTrackerService trackerService;
+    private DiaryRestoreService restoreService;
     private DuplicateWatcher duplicateWatcher;
 
     public DiaryService(Plugin plugin, ConfigManager configManager, DiaryStore diaryStore, DiaryItem diaryItem, DeliveryService deliveryService) {
@@ -52,6 +54,14 @@ public final class DiaryService {
 
     public void setDuplicateWatcher(DuplicateWatcher duplicateWatcher) {
         this.duplicateWatcher = duplicateWatcher;
+    }
+
+    public void setTrackerService(DiaryTrackerService trackerService) {
+        this.trackerService = trackerService;
+    }
+
+    public void setRestoreService(DiaryRestoreService restoreService) {
+        this.restoreService = restoreService;
     }
 
     public boolean isDiary(ItemStack stack) {
@@ -83,7 +93,14 @@ public final class DiaryService {
     }
 
     public void handlePlayerJoin(Player player) {
+        if (restoreService != null) {
+            restoreService.processPendingRemovals(player);
+        }
         refreshOwnedDiaries(player);
+        if (trackerService != null) {
+            trackerService.trackPlayerInventory(player);
+            trackerService.trackEnderChest(player);
+        }
 
         if (configManager.cfg().getBoolean("give-on-first-join", true)
                 && (!diaryStore.hasIssued(player.getUniqueId()) || diaryStore.getDiaryId(player.getUniqueId()) == null)) {
@@ -185,14 +202,22 @@ public final class DiaryService {
             Bukkit.getPluginManager().callEvent(new DiaryFilledEvent(event.getPlayer(), item.clone(), newMeta.clone()));
         }
 
-        if (duplicateWatcher != null) {
-            Bukkit.getScheduler().runTaskLater(plugin, () -> duplicateWatcher.refreshPlayerSnapshot(event.getPlayer()), 1L);
-        }
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            if (trackerService != null) {
+                trackerService.trackPlayerInventory(event.getPlayer());
+            }
+            if (duplicateWatcher != null) {
+                duplicateWatcher.refreshPlayerSnapshot(event.getPlayer());
+            }
+        }, 1L);
         return true;
     }
 
     public void handleDiaryObtained(Player player, ItemStack stack) {
         Bukkit.getPluginManager().callEvent(new DiaryObtainedEvent(player, stack.clone()));
+        if (trackerService != null) {
+            trackerService.trackPlayerInventory(player);
+        }
         if (duplicateWatcher != null) {
             duplicateWatcher.refreshPlayerSnapshot(player);
         }
@@ -201,6 +226,9 @@ public final class DiaryService {
     public void onVoidReturnDelivered(Player player, ItemStack stack) {
         Bukkit.getPluginManager().callEvent(new DiaryVoidReturnEvent(player, stack.clone()));
         player.sendMessage(configManager.msg("void-returned"));
+        if (trackerService != null) {
+            trackerService.trackPlayerInventory(player);
+        }
         if (duplicateWatcher != null) {
             duplicateWatcher.refreshPlayerSnapshot(player);
         }
@@ -211,6 +239,9 @@ public final class DiaryService {
             if (diaryItem.isDiary(stack) && player.getUniqueId().equals(diaryItem.getOwner(stack))) {
                 diaryItem.refreshOwnerCosmetics(player.getUniqueId(), player.getName(), stack);
             }
+        }
+        if (trackerService != null) {
+            trackerService.trackPlayerInventory(player);
         }
         if (duplicateWatcher != null) {
             duplicateWatcher.refreshPlayerSnapshot(player);
