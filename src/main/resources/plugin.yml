@@ -1,8 +1,8 @@
 name: DiaryKeeper
-main: com.lincoln.diary.DiaryPlugin
+main: com.p2wn.diary.DiaryPlugin
 version: 1.0.0
 api-version: '1.21'
-authors: [ Lincoln ]
+authors: [ P2wn ]
 description: One-of-a-kind, owner-editable collectible diaries (indestructible, void-safe, warn on duplicates)
 commands:
   diary:
