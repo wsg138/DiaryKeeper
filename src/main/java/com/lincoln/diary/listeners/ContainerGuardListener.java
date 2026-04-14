@@ -1,7 +1,10 @@
 package com.lincoln.diary.listeners;
 
 import com.lincoln.diary.DiaryPlugin;
+import com.lincoln.diary.events.DiaryContainerAttemptEvent;
 import com.lincoln.diary.item.DiaryItem;
+import org.bukkit.Bukkit;
+import org.bukkit.entity.Player;
 import org.bukkit.Material;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -79,9 +82,12 @@ public class ContainerGuardListener implements Listener {
 
         final InventoryAction action = e.getAction();
         boolean topSlot = (e.getClickedInventory() != null && e.getClickedInventory().equals(e.getView().getTopInventory()));
+        String containerName = e.getView().getTopInventory().getType().name();
         if (topSlot
                 && e.getClick() == ClickType.SWAP_OFFHAND
                 && isDiaryOrBundleWithDiary(e.getWhoClicked().getInventory().getItemInOffHand())) {
+            if (e.getWhoClicked() instanceof Player p)
+                Bukkit.getPluginManager().callEvent(new DiaryContainerAttemptEvent(p, e.getWhoClicked().getInventory().getItemInOffHand(), containerName));
             e.setCancelled(true);
             return;
         }
@@ -89,11 +95,15 @@ public class ContainerGuardListener implements Listener {
         switch (action) {
             case PLACE_ALL, PLACE_ONE, PLACE_SOME, SWAP_WITH_CURSOR -> {
                 if (topSlot && isDiaryOrBundleWithDiary(e.getCursor())) {
+                    if (e.getWhoClicked() instanceof Player p)
+                        Bukkit.getPluginManager().callEvent(new DiaryContainerAttemptEvent(p, e.getCursor(), containerName));
                     e.setCancelled(true);
                 }
             }
             case MOVE_TO_OTHER_INVENTORY -> {
                 if (!topSlot && isDiaryOrBundleWithDiary(e.getCurrentItem())) {
+                    if (e.getWhoClicked() instanceof Player p)
+                        Bukkit.getPluginManager().callEvent(new DiaryContainerAttemptEvent(p, e.getCurrentItem(), containerName));
                     e.setCancelled(true);
                 }
             }
@@ -101,12 +111,18 @@ public class ContainerGuardListener implements Listener {
                 if (topSlot) {
                     ItemStack hotbar = getHotbarOrOffhandItem(e);
                     if (isDiaryOrBundleWithDiary(hotbar)) {
+                        if (e.getWhoClicked() instanceof Player p)
+                            Bukkit.getPluginManager().callEvent(new DiaryContainerAttemptEvent(p, hotbar, containerName));
                         e.setCancelled(true);
                     }
                 }
             }
             case COLLECT_TO_CURSOR -> {
-                if (isDiaryOrBundleWithDiary(e.getCursor())) e.setCancelled(true);
+                if (isDiaryOrBundleWithDiary(e.getCursor())) {
+                    if (e.getWhoClicked() instanceof Player p)
+                        Bukkit.getPluginManager().callEvent(new DiaryContainerAttemptEvent(p, e.getCursor(), containerName));
+                    e.setCancelled(true);
+                }
             }
             default -> { /* no-op */ }
         }

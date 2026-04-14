@@ -2,11 +2,13 @@ package com.lincoln.diary.listeners;
 
 import com.lincoln.diary.DiaryPlugin;
 import com.lincoln.diary.item.DiaryItem;
+import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.inventory.ItemStack;
+import com.lincoln.diary.events.DiaryReceivedEvent;
 
 import java.util.List;
 
@@ -30,6 +32,7 @@ public class JoinListener implements Listener {
         // TRUE one-time mint: only if never issued (or after data/world reset)
         if (!plugin.diaryStore().hasIssued(p.getUniqueId()) || plugin.diaryStore().getId(p.getUniqueId()) == null) {
             var minted = DiaryItem.mintFor(p);
+            Bukkit.getPluginManager().callEvent(new DiaryReceivedEvent(p, minted));
             var leftovers = p.getInventory().addItem(minted);
             if (!leftovers.isEmpty()) {
                 // inventory full → reliable delivery queue (no unsafe drops)

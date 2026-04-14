@@ -1,7 +1,9 @@
 package com.lincoln.diary.listeners;
 
 import com.lincoln.diary.DiaryPlugin;
+import com.lincoln.diary.events.DiaryObtainedEvent;
 import com.lincoln.diary.item.DiaryItem;
+import org.bukkit.Bukkit;
 import org.bukkit.entity.HumanEntity;
 import org.bukkit.entity.Item;
 import org.bukkit.event.EventHandler;
@@ -53,6 +55,7 @@ public class DropTrackListener implements Listener {
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onPickup(PlayerPickupItemEvent e) {
         if (DiaryItem.isDiary(e.getItem().getItemStack())) {
+            Bukkit.getPluginManager().callEvent(new DiaryObtainedEvent(e.getPlayer(), e.getItem().getItemStack()));
             plugin.voidWatcher().untrack(e.getItem());
         }
     }

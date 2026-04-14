@@ -1,6 +1,7 @@
 package com.lincoln.diary.logic;
 
 import com.lincoln.diary.DiaryPlugin;
+import com.lincoln.diary.events.DiaryDuplicateWarningEvent;
 import com.lincoln.diary.item.DiaryItem;
 import org.bukkit.Bukkit;
 import org.bukkit.Chunk;
@@ -162,6 +163,8 @@ public class DuplicateWatcher {
             }
 
             String msg = sb.toString();
+
+            Bukkit.getPluginManager().callEvent(new DiaryDuplicateWarningEvent(id, list.size(), scopeTag, msg));
 
             // Console log
             plugin.getLogger().warning(msg);

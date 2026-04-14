@@ -1,7 +1,9 @@
 package com.lincoln.diary.listeners;
 
 import com.lincoln.diary.DiaryPlugin;
+import com.lincoln.diary.events.DiaryDestructionAttemptEvent;
 import com.lincoln.diary.item.DiaryItem;
+import org.bukkit.Bukkit;
 import org.bukkit.entity.Item;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -20,7 +22,10 @@ public class ItemProtectionListener implements Listener {
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onCombust(EntityCombustEvent e) {
         if (!plugin.configManager().cfg().getBoolean("indestructible.prevent-combust", true)) return;
-        if (e.getEntity() instanceof Item it && DiaryItem.isDiary(it.getItemStack())) e.setCancelled(true);
+        if (e.getEntity() instanceof Item it && DiaryItem.isDiary(it.getItemStack())) {
+            Bukkit.getPluginManager().callEvent(new DiaryDestructionAttemptEvent(it, "COMBUST"));
+            e.setCancelled(true);
+        }
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -32,13 +37,22 @@ public class ItemProtectionListener implements Listener {
 
         switch (e.getCause()) {
             case FIRE, FIRE_TICK, LAVA -> {
-                if (cfg.getBoolean("indestructible.prevent-combust", true)) e.setCancelled(true);
+                if (cfg.getBoolean("indestructible.prevent-combust", true)) {
+                    Bukkit.getPluginManager().callEvent(new DiaryDestructionAttemptEvent(it, e.getCause().name()));
+                    e.setCancelled(true);
+                }
             }
             case ENTITY_EXPLOSION, BLOCK_EXPLOSION -> {
-                if (cfg.getBoolean("indestructible.prevent-explosion", true)) e.setCancelled(true);
+                if (cfg.getBoolean("indestructible.prevent-explosion", true)) {
+                    Bukkit.getPluginManager().callEvent(new DiaryDestructionAttemptEvent(it, e.getCause().name()));
+                    e.setCancelled(true);
+                }
             }
             default -> {
-                if (cfg.getBoolean("indestructible.prevent-contact-damage", true)) e.setCancelled(true);
+                if (cfg.getBoolean("indestructible.prevent-contact-damage", true)) {
+                    Bukkit.getPluginManager().callEvent(new DiaryDestructionAttemptEvent(it, e.getCause().name()));
+                    e.setCancelled(true);
+                }
             }
         }
     }
@@ -46,7 +60,10 @@ public class ItemProtectionListener implements Listener {
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onDespawn(ItemDespawnEvent e) {
         if (!plugin.configManager().cfg().getBoolean("indestructible.prevent-despawn", true)) return;
-        if (DiaryItem.isDiary(e.getEntity().getItemStack())) e.setCancelled(true);
+        if (DiaryItem.isDiary(e.getEntity().getItemStack())) {
+            Bukkit.getPluginManager().callEvent(new DiaryDestructionAttemptEvent(e.getEntity(), "DESPAWN"));
+            e.setCancelled(true);
+        }
     }
 
     @EventHandler

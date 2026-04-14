@@ -1,6 +1,7 @@
 package com.lincoln.diary.logic;
 
 import com.lincoln.diary.DiaryPlugin;
+import com.lincoln.diary.events.DiaryVoidReturnEvent;
 import com.lincoln.diary.item.DiaryItem;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Item;
@@ -104,6 +105,7 @@ public class VoidWatcher {
                 if (!leftovers.isEmpty()) {
                     delivery.enqueue(dropperId, stack);
                 } else {
+                    Bukkit.getPluginManager().callEvent(new DiaryVoidReturnEvent(dropper, stack));
                     dropper.sendMessage(plugin.configManager().msg("void-returned"));
                 }
             } else {

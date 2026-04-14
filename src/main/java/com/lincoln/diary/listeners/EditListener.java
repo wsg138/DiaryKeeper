@@ -1,8 +1,11 @@
 package com.lincoln.diary.listeners;
 
 import com.lincoln.diary.DiaryPlugin;
+import com.lincoln.diary.events.DiaryFilledEvent;
+import com.lincoln.diary.events.DiarySignedEvent;
 import com.lincoln.diary.item.DiaryItem;
 import com.lincoln.diary.util.DiaryTextValidator;
+import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -54,6 +57,12 @@ public class EditListener implements Listener {
                 e.getPlayer().sendMessage(plugin.configManager().msg("ascii-only"));
                 return;
             }
+        }
+
+        if (e.isSigning()) {
+            Bukkit.getPluginManager().callEvent(new DiarySignedEvent(e.getPlayer(), item, newMeta));
+        } else {
+            Bukkit.getPluginManager().callEvent(new DiaryFilledEvent(e.getPlayer(), item, newMeta));
         }
     }
 }
