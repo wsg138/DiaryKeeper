@@ -7,7 +7,7 @@ import org.bukkit.inventory.ItemStack;
 
 /**
  * Fired when a player attempts to place a diary into a restricted container.
- * The action is always blocked â€” this event is informational only.
+ * The action is always blocked; this event is informational only.
  */
 public class DiaryContainerAttemptEvent extends Event {
 

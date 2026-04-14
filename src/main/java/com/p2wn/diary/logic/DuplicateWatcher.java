@@ -1,6 +1,6 @@
 package com.p2wn.diary.logic;
 
-import com.p2wn.diary.DiaryPlugin;
+import com.p2wn.diary.config.ConfigManager;
 import com.p2wn.diary.events.DiaryDuplicateWarningEvent;
 import com.p2wn.diary.item.DiaryItem;
 import org.bukkit.Bukkit;
@@ -14,178 +14,258 @@ import org.bukkit.entity.Player;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.plugin.Plugin;
 
 import java.time.Instant;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.UUID;
 
-/**
- * Warn-only duplicate detector.
- * Now reports current holder name + coords instead of owner UUID.
- * Debounced per diaryId.
- */
-public class DuplicateWatcher {
+public final class DuplicateWatcher {
 
-    private final DiaryPlugin plugin;
-    private final Map<String, Long> lastWarnAt = new HashMap<>(); // diaryId -> epoch seconds
-
-    public DuplicateWatcher(DiaryPlugin plugin) {
-        this.plugin = plugin;
-    }
-
-    private boolean shouldWarn(String id) {
-        long now = Instant.now().getEpochSecond();
-        long last = lastWarnAt.getOrDefault(id, 0L);
-        long debounce = plugin.configManager().cfg().getLong("duplicates.debounce-seconds", 60L);
-        if (now - last >= debounce) {
-            lastWarnAt.put(id, now);
-            return true;
-        }
-        return false;
-    }
-
-    /** One occurrence of a diary while scanning. */
     private record Occurrence(String diaryId, String holderName, String whereTag, String coords) {}
 
-    /* ---------- public entry points (unchanged signatures) ---------- */
+    private final Plugin plugin;
+    private final ConfigManager configManager;
+    private final DiaryItem diaryItem;
 
-    public void onPlayerJoinInventory(Player p) {
-        if (!plugin.configManager().cfg().getBoolean("duplicates.warn-on-join", true)) return;
+    private final Map<String, Long> lastWarnAt = new HashMap<>();
+    private final Map<UUID, List<Occurrence>> playerSnapshots = new HashMap<>();
+    private final Map<UUID, Occurrence> groundItemSnapshots = new HashMap<>();
 
-        List<Occurrence> found = new ArrayList<>();
-        scanPlayerInventory(p, found);
-        warnIfDuplicates(found, "player-inventory");
+    public DuplicateWatcher(Plugin plugin, ConfigManager configManager, DiaryItem diaryItem) {
+        this.plugin = plugin;
+        this.configManager = configManager;
+        this.diaryItem = diaryItem;
     }
 
-    public void onInventoryOpen(HumanEntity who, Inventory inv) {
-        if (!plugin.configManager().cfg().getBoolean("duplicates.warn-on-container-open", true)) return;
+    public void refreshPlayerSnapshot(Player player) {
+        List<Occurrence> occurrences = new ArrayList<>();
+        String holderName = player.getName();
+        String coords = coordsOf(player.getLocation());
+        for (ItemStack stack : player.getInventory().getContents()) {
+            if (!diaryItem.isDiary(stack)) {
+                continue;
+            }
+            String diaryId = diaryItem.getDiaryId(stack);
+            if (diaryId != null) {
+                occurrences.add(new Occurrence(diaryId, holderName, "player", coords));
+            }
+        }
+        playerSnapshots.put(player.getUniqueId(), occurrences);
+    }
 
-        List<Occurrence> found = new ArrayList<>();
-        scanContainerInventory(who, inv, found);
-        warnIfDuplicates(found, "container");
+    public void removePlayerSnapshot(UUID playerId) {
+        playerSnapshots.remove(playerId);
+    }
+
+    public void refreshGroundItemSnapshot(Item item) {
+        if (item == null || item.isDead() || !diaryItem.isDiary(item.getItemStack())) {
+            return;
+        }
+        String diaryId = diaryItem.getDiaryId(item.getItemStack());
+        if (diaryId == null) {
+            return;
+        }
+        groundItemSnapshots.put(item.getUniqueId(), new Occurrence(diaryId, "ground", "item", coordsOf(item.getLocation())));
+    }
+
+    public void removeGroundItemSnapshot(UUID itemId) {
+        groundItemSnapshots.remove(itemId);
+    }
+
+    public void onPlayerJoinInventory(Player player) {
+        if (!configManager.cfg().getBoolean("duplicates.warn-on-join", true)) {
+            return;
+        }
+        warnForIds(playerSnapshots.getOrDefault(player.getUniqueId(), Collections.emptyList()), "player-inventory");
+    }
+
+    public void onInventoryOpen(HumanEntity opener, Inventory inventory) {
+        if (!configManager.cfg().getBoolean("duplicates.warn-on-container-open", true)) {
+            return;
+        }
+        warnForIds(scanContainerInventory(opener, inventory), "container");
     }
 
     public void onChunkLoad(Chunk chunk) {
-        if (!plugin.configManager().cfg().getBoolean("duplicates.warn-on-chunk-load", true)) return;
+        List<Occurrence> occurrences = scanChunkItems(chunk);
+        if (configManager.cfg().getBoolean("duplicates.warn-on-chunk-load", true)) {
+            warnForIds(occurrences, "chunk " + chunk.getX() + "," + chunk.getZ());
+        }
+    }
 
-        List<Occurrence> found = new ArrayList<>();
-        scanChunkItems(chunk, found);
-        warnIfDuplicates(found, "chunk " + chunk.getX() + "," + chunk.getZ());
+    public void onChunkUnload(Chunk chunk) {
+        for (org.bukkit.entity.Entity entity : chunk.getEntities()) {
+            groundItemSnapshots.remove(entity.getUniqueId());
+        }
     }
 
     public void sweepStartup() {
-        // Light sweep: online players and already-loaded chunks
-        for (Player p : Bukkit.getOnlinePlayers()) onPlayerJoinInventory(p);
-        Bukkit.getWorlds().forEach(w -> {
-            for (Chunk c : w.getLoadedChunks()) onChunkLoad(c);
-        });
-    }
+        playerSnapshots.clear();
+        groundItemSnapshots.clear();
 
-    /* ---------- scanning helpers ---------- */
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            refreshPlayerSnapshot(player);
+        }
+        for (org.bukkit.World world : Bukkit.getWorlds()) {
+            for (Chunk chunk : world.getLoadedChunks()) {
+                scanChunkItems(chunk);
+            }
+        }
 
-    private void scanPlayerInventory(Player p, List<Occurrence> out) {
-        if (p == null) return;
-        String who = p.getName();
-        String coords = coordsOf(p.getLocation());
-        for (ItemStack it : p.getInventory().getContents()) {
-            if (it == null || !DiaryItem.isDiary(it)) continue;
-            String id = DiaryItem.getDiaryId(it);
-            if (id == null) continue;
-            out.add(new Occurrence(id, who, "player", coords));
+        if (configManager.cfg().getBoolean("duplicates.warn-on-startup", true)) {
+            List<Occurrence> occurrences = new ArrayList<>();
+            playerSnapshots.values().forEach(occurrences::addAll);
+            occurrences.addAll(groundItemSnapshots.values());
+            warnForIds(occurrences, "startup");
         }
     }
 
-    private void scanContainerInventory(HumanEntity opener, Inventory inv, List<Occurrence> out) {
-        if (inv == null) return;
+    private List<Occurrence> scanContainerInventory(HumanEntity opener, Inventory inventory) {
+        if (inventory == null) {
+            return Collections.emptyList();
+        }
 
-        String who = opener != null ? opener.getName() : "unknown";
-        String coords = "?";
-        String where = "container";
+        String holderName = opener != null ? opener.getName() : "unknown";
+        String whereTag = "container";
+        String coords = opener != null ? coordsOf(opener.getLocation()) : "?";
 
-        InventoryHolder holder = inv.getHolder();
+        InventoryHolder holder = inventory.getHolder();
         if (holder instanceof BlockState state) {
-            Block b = state.getBlock();
-            coords = coordsOf(b.getLocation());
-            where = state.getType().name().toLowerCase(Locale.ROOT);
-        } else if (holder instanceof Block blockHolder) {
-            coords = coordsOf(blockHolder.getLocation());
-        } else if (opener != null) {
-            coords = coordsOf(opener.getLocation());
+            Block block = state.getBlock();
+            whereTag = state.getType().name().toLowerCase(Locale.ROOT);
+            coords = coordsOf(block.getLocation());
+        } else if (holder instanceof Block block) {
+            coords = coordsOf(block.getLocation());
         }
 
-        for (ItemStack it : inv.getContents()) {
-            if (it == null || !DiaryItem.isDiary(it)) continue;
-            String id = DiaryItem.getDiaryId(it);
-            if (id == null) continue;
-            out.add(new Occurrence(id, who, where, coords));
+        List<Occurrence> occurrences = new ArrayList<>();
+        for (ItemStack stack : inventory.getContents()) {
+            if (!diaryItem.isDiary(stack)) {
+                continue;
+            }
+            String diaryId = diaryItem.getDiaryId(stack);
+            if (diaryId != null) {
+                occurrences.add(new Occurrence(diaryId, holderName, whereTag, coords));
+            }
         }
+        return occurrences;
     }
 
-    private void scanChunkItems(Chunk chunk, List<Occurrence> out) {
-        for (var e : chunk.getEntities()) {
-            if (e instanceof Item item) {
-                ItemStack st = item.getItemStack();
-                if (st == null || !DiaryItem.isDiary(st)) continue;
-                String id = DiaryItem.getDiaryId(st);
-                if (id == null) continue;
-                out.add(new Occurrence(id, "ground", "item", coordsOf(item.getLocation())));
+    private List<Occurrence> scanChunkItems(Chunk chunk) {
+        List<Occurrence> occurrences = new ArrayList<>();
+        for (org.bukkit.entity.Entity entity : chunk.getEntities()) {
+            if (entity instanceof Item item && diaryItem.isDiary(item.getItemStack())) {
+                String diaryId = diaryItem.getDiaryId(item.getItemStack());
+                if (diaryId == null) {
+                    continue;
+                }
+                Occurrence occurrence = new Occurrence(diaryId, "ground", "item", coordsOf(item.getLocation()));
+                groundItemSnapshots.put(item.getUniqueId(), occurrence);
+                occurrences.add(occurrence);
             }
         }
+        return occurrences;
     }
 
-    /* ---------- warning assembly ---------- */
+    private void warnForIds(List<Occurrence> triggerOccurrences, String scopeTag) {
+        if (triggerOccurrences == null || triggerOccurrences.isEmpty()) {
+            return;
+        }
 
-    private void warnIfDuplicates(List<Occurrence> found, String scopeTag) {
-        if (found.isEmpty()) return;
+        Map<String, List<Occurrence>> global = buildGlobalOccurrenceMap(triggerOccurrences);
+        Map<String, Occurrence> firstByDiaryId = new LinkedHashMap<>();
+        for (Occurrence occurrence : triggerOccurrences) {
+            firstByDiaryId.putIfAbsent(occurrence.diaryId(), occurrence);
+        }
 
-        // Group by diaryId
-        Map<String, List<Occurrence>> byId = new HashMap<>();
-        for (Occurrence oc : found) byId.computeIfAbsent(oc.diaryId, k -> new ArrayList<>()).add(oc);
-
-        byId.forEach((id, list) -> {
-            if (list.size() <= 1) return;         // not a duplicate in this scope
-            if (!shouldWarn(id)) return;          // debounce per id
-
-            // Build a concise staff/console message with holders + coords
-            String idShort = id.substring(0, Math.min(8, id.length()));
-            StringBuilder sb = new StringBuilder();
-            sb.append("[Diary] Duplicate detected (id ").append(idShort).append(") in ").append(scopeTag).append(": ");
-
-            int maxList = 5;
-            int i = 0;
-            for (; i < list.size() && i < maxList; i++) {
-                Occurrence oc = list.get(i);
-                sb.append(oc.holderName).append(" @ ").append(oc.coords)
-                        .append(" [").append(oc.whereTag).append("]");
-                if (i < Math.min(list.size(), maxList) - 1) sb.append(", ");
-            }
-            if (list.size() > maxList) {
-                sb.append(", +").append(list.size() - maxList).append(" more");
+        for (Occurrence occurrence : firstByDiaryId.values()) {
+            List<Occurrence> matches = global.getOrDefault(occurrence.diaryId(), List.of());
+            if (matches.size() <= 1 || !shouldWarn(occurrence.diaryId())) {
+                continue;
             }
 
-            String msg = sb.toString();
+            String message = buildWarningMessage(occurrence.diaryId(), matches, scopeTag);
+            Bukkit.getPluginManager().callEvent(new DiaryDuplicateWarningEvent(occurrence.diaryId(), matches.size(), scopeTag, message));
+            plugin.getLogger().warning(message);
 
-            Bukkit.getPluginManager().callEvent(new DiaryDuplicateWarningEvent(id, list.size(), scopeTag, msg));
-
-            // Console log
-            plugin.getLogger().warning(msg);
-
-            // Staff notify
-            if (plugin.configManager().cfg().getBoolean("duplicates.staff-notify", true)) {
-                for (Player p : Bukkit.getOnlinePlayers()) {
-                    if (p.hasPermission("diary.notify")) {
-                        p.sendMessage("Â§e" + msg);
+            if (configManager.cfg().getBoolean("duplicates.staff-notify", true)) {
+                for (Player player : Bukkit.getOnlinePlayers()) {
+                    if (player.hasPermission("diary.notify")) {
+                        player.sendMessage(configManager.color("&e" + message));
                     }
                 }
             }
-        });
+        }
     }
 
-    private String coordsOf(Location loc) {
-        if (loc == null) return "?";
-        int x = loc.getBlockX();
-        int y = loc.getBlockY();
-        int z = loc.getBlockZ();
-        String w = (loc.getWorld() != null) ? loc.getWorld().getName() : "?";
-        return w + ":" + x + "," + y + "," + z;
+    private Map<String, List<Occurrence>> buildGlobalOccurrenceMap(List<Occurrence> triggerOccurrences) {
+        Map<String, List<Occurrence>> grouped = new LinkedHashMap<>();
+        for (List<Occurrence> occurrences : playerSnapshots.values()) {
+            addOccurrences(grouped, occurrences);
+        }
+        addOccurrences(grouped, groundItemSnapshots.values());
+        addOccurrences(grouped, triggerOccurrences);
+        return grouped;
+    }
+
+    private void addOccurrences(Map<String, List<Occurrence>> grouped, Iterable<Occurrence> occurrences) {
+        for (Occurrence occurrence : occurrences) {
+            grouped.computeIfAbsent(occurrence.diaryId(), ignored -> new ArrayList<>()).add(occurrence);
+        }
+    }
+
+    private boolean shouldWarn(String diaryId) {
+        long now = Instant.now().getEpochSecond();
+        long debounce = Math.max(1L, configManager.cfg().getLong("duplicates.debounce-seconds", 60L));
+        long lastWarn = lastWarnAt.getOrDefault(diaryId, 0L);
+        if (now - lastWarn < debounce) {
+            return false;
+        }
+        lastWarnAt.put(diaryId, now);
+        return true;
+    }
+
+    private String buildWarningMessage(String diaryId, List<Occurrence> occurrences, String scopeTag) {
+        String shortId = diaryId.substring(0, Math.min(8, diaryId.length()));
+        int maxListed = Math.max(1, configManager.cfg().getInt("duplicates.max-listed-occurrences", 5));
+
+        StringBuilder builder = new StringBuilder();
+        builder.append("[Diary] Duplicate detected (id ")
+                .append(shortId)
+                .append(") in ")
+                .append(scopeTag)
+                .append(": ");
+
+        for (int i = 0; i < occurrences.size() && i < maxListed; i++) {
+            Occurrence occurrence = occurrences.get(i);
+            builder.append(occurrence.holderName())
+                    .append(" @ ")
+                    .append(occurrence.coords())
+                    .append(" [")
+                    .append(occurrence.whereTag())
+                    .append("]");
+            if (i < Math.min(occurrences.size(), maxListed) - 1) {
+                builder.append(", ");
+            }
+        }
+
+        if (occurrences.size() > maxListed) {
+            builder.append(", +").append(occurrences.size() - maxListed).append(" more");
+        }
+        return builder.toString();
+    }
+
+    private String coordsOf(Location location) {
+        if (location == null || location.getWorld() == null) {
+            return "?";
+        }
+        return location.getWorld().getName() + ":" + location.getBlockX() + "," + location.getBlockY() + "," + location.getBlockZ();
     }
 }

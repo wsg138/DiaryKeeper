@@ -3,109 +3,171 @@ package com.p2wn.diary;
 import com.p2wn.diary.commands.DiaryCommand;
 import com.p2wn.diary.config.ConfigManager;
 import com.p2wn.diary.data.DiaryStore;
+import com.p2wn.diary.item.DiaryItem;
+import com.p2wn.diary.listeners.AnvilGuardListener;
+import com.p2wn.diary.listeners.BundleGuardListener;
+import com.p2wn.diary.listeners.ContainerGuardListener;
+import com.p2wn.diary.listeners.DropTrackListener;
+import com.p2wn.diary.listeners.EditListener;
+import com.p2wn.diary.listeners.EnderChestGuardListener;
+import com.p2wn.diary.listeners.GrindstoneGuardListener;
+import com.p2wn.diary.listeners.InventoryOpenListener;
+import com.p2wn.diary.listeners.ItemProtectionListener;
+import com.p2wn.diary.listeners.JoinListener;
+import com.p2wn.diary.listeners.MetaGuardListener;
+import com.p2wn.diary.listeners.ShulkerGuardListener;
 import com.p2wn.diary.logic.DeliveryService;
+import com.p2wn.diary.logic.DiaryService;
 import com.p2wn.diary.logic.DuplicateWatcher;
+import com.p2wn.diary.logic.RestrictionService;
 import com.p2wn.diary.logic.VoidWatcher;
-import com.p2wn.diary.listeners.*;
 import org.bukkit.Bukkit;
-import org.bukkit.NamespacedKey;
 import org.bukkit.World;
+import org.bukkit.command.PluginCommand;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.util.Objects;
 
-public class DiaryPlugin extends JavaPlugin {
-
-    private static DiaryPlugin instance;
-    public static DiaryPlugin get() { return instance; }
+public final class DiaryPlugin extends JavaPlugin {
 
     private ConfigManager configManager;
     private DiaryStore diaryStore;
+    private DiaryKeys diaryKeys;
+    private DiaryItem diaryItem;
+    private RestrictionService restrictionService;
     private DuplicateWatcher duplicateWatcher;
-    private VoidWatcher voidWatcher;
     private DeliveryService deliveryService;
-
-    // PDC keys
-    private NamespacedKey keyIsDiary;
-    private NamespacedKey keyOwnerUuid;
-    private NamespacedKey keyDiaryId;
-    private NamespacedKey keyLastDropper;
+    private VoidWatcher voidWatcher;
+    private DiaryService diaryService;
 
     @Override
     public void onEnable() {
-        instance = this;
+        configManager = new ConfigManager(this);
+        configManager.load();
 
-        saveDefaultConfig();
-        saveResource("messages.yml", false);
+        diaryKeys = new DiaryKeys(this);
+        diaryStore = new DiaryStore(this);
+        diaryStore.load();
+        diaryStore.reloadAutosave();
 
-        this.configManager = new ConfigManager(this);
-        this.diaryStore = new DiaryStore(this);
+        handleWorldReset();
 
-        // Detect "world reset": if the main world's UUID changed since last run, reset diary registry
-        World main = Bukkit.getWorlds().isEmpty() ? null : Bukkit.getWorlds().get(0);
-        if (main != null) {
-            String current = main.getUID().toString();
-            String last = diaryStore.getLastWorldUid();
-            if (last == null || !Objects.equals(last, current)) {
-                getLogger().warning("World UUID changed or first run â€” resetting diary registry and queues.");
-                diaryStore.resetAllPlayers();   // clears known diary IDs & queues
-                diaryStore.setLastWorldUid(current);
-                diaryStore.save();
-            }
-        }
+        diaryItem = new DiaryItem(configManager, diaryStore, diaryKeys);
+        duplicateWatcher = new DuplicateWatcher(this, configManager, diaryItem);
+        deliveryService = new DeliveryService(this, diaryStore);
+        diaryService = new DiaryService(this, configManager, diaryStore, diaryItem, deliveryService);
+        restrictionService = new RestrictionService(configManager, diaryItem);
+        voidWatcher = new VoidWatcher(this, configManager, diaryItem, deliveryService, duplicateWatcher);
 
-        this.duplicateWatcher = new DuplicateWatcher(this);
-        this.deliveryService = new DeliveryService(this);
-        this.voidWatcher = new VoidWatcher(this, deliveryService);
+        diaryService.setDuplicateWatcher(duplicateWatcher);
+        deliveryService.setDiaryService(diaryService);
 
-        keyIsDiary     = new NamespacedKey(this, "is_diary");
-        keyOwnerUuid   = new NamespacedKey(this, "owner_uuid");
-        keyDiaryId     = new NamespacedKey(this, "diary_id");
-        keyLastDropper = new NamespacedKey(this, "last_dropper");
+        registerCommand();
+        registerListeners();
 
-        getCommand("diary").setExecutor(new DiaryCommand(this));
-
-        var pm = getServer().getPluginManager();
-        pm.registerEvents(new JoinListener(this), this);
-        pm.registerEvents(new EditListener(this), this);
-        pm.registerEvents(new InventoryOpenListener(this), this);
-        pm.registerEvents(new ItemProtectionListener(this), this);
-        pm.registerEvents(new DropTrackListener(this), this);
-        pm.registerEvents(new AnvilGuardListener(), this);
-        pm.registerEvents(new GrindstoneGuardListener(), this);
-        pm.registerEvents(new MetaGuardListener(), this);
-        pm.registerEvents(new EnderChestGuardListener(), this);
-        pm.registerEvents(new EnderChestGuardListener(), this);
-        pm.registerEvents(new BundleGuardListener(), this);
-        pm.registerEvents(new ShulkerGuardListener(), this);
-        pm.registerEvents(new ContainerGuardListener(), this);
-
-
-
-
-        // Optional startup sweep
-        if (configManager.cfg().getBoolean("duplicates.warn-on-startup", true)) {
-            duplicateWatcher.sweepStartup();
-        }
+        duplicateWatcher.sweepStartup();
+        deliveryService.reloadSettings();
 
         getLogger().info("DiaryKeeper enabled.");
     }
 
     @Override
     public void onDisable() {
-        diaryStore.save();
-        voidWatcher.stopIfIdle(true);
-        deliveryService.stopIfIdle(true);
+        if (voidWatcher != null) {
+            voidWatcher.shutdown();
+        }
+        if (deliveryService != null) {
+            deliveryService.shutdown();
+        }
+        if (diaryStore != null) {
+            diaryStore.shutdown();
+        }
     }
 
-    public ConfigManager configManager() { return configManager; }
-    public DiaryStore diaryStore() { return diaryStore; }
-    public DuplicateWatcher duplicateWatcher() { return duplicateWatcher; }
-    public VoidWatcher voidWatcher() { return voidWatcher; }
-    public DeliveryService deliveryService() { return deliveryService; }
+    public void reloadPluginState() {
+        diaryStore.flushNow();
+        configManager.reload();
+        diaryStore.reloadAutosave();
+        deliveryService.reloadSettings();
+        voidWatcher.reloadSettings();
+        duplicateWatcher.sweepStartup();
+    }
 
-    public NamespacedKey keyIsDiary() { return keyIsDiary; }
-    public NamespacedKey keyOwnerUuid() { return keyOwnerUuid; }
-    public NamespacedKey keyDiaryId() { return keyDiaryId; }
-    public NamespacedKey keyLastDropper() { return keyLastDropper; }
+    public ConfigManager configManager() {
+        return configManager;
+    }
+
+    public DiaryStore diaryStore() {
+        return diaryStore;
+    }
+
+    public DiaryKeys diaryKeys() {
+        return diaryKeys;
+    }
+
+    public DiaryItem diaryItem() {
+        return diaryItem;
+    }
+
+    public RestrictionService restrictionService() {
+        return restrictionService;
+    }
+
+    public DuplicateWatcher duplicateWatcher() {
+        return duplicateWatcher;
+    }
+
+    public DeliveryService deliveryService() {
+        return deliveryService;
+    }
+
+    public VoidWatcher voidWatcher() {
+        return voidWatcher;
+    }
+
+    public DiaryService diaryService() {
+        return diaryService;
+    }
+
+    private void handleWorldReset() {
+        World mainWorld = Bukkit.getWorlds().isEmpty() ? null : Bukkit.getWorlds().get(0);
+        if (mainWorld == null) {
+            return;
+        }
+
+        String currentWorldId = mainWorld.getUID().toString();
+        String previousWorldId = diaryStore.getLastWorldUid();
+        if (previousWorldId == null || !Objects.equals(previousWorldId, currentWorldId)) {
+            getLogger().warning("Main world UUID changed or was not recorded; resetting diary issuance state and queued deliveries.");
+            diaryStore.resetAllPlayers();
+            diaryStore.setLastWorldUid(currentWorldId);
+            diaryStore.flushNow();
+        }
+    }
+
+    private void registerCommand() {
+        PluginCommand command = getCommand("diary");
+        if (command == null) {
+            throw new IllegalStateException("Command 'diary' is missing from plugin.yml");
+        }
+        DiaryCommand executor = new DiaryCommand(this);
+        command.setExecutor(executor);
+        command.setTabCompleter(executor);
+    }
+
+    private void registerListeners() {
+        var pluginManager = getServer().getPluginManager();
+        pluginManager.registerEvents(new JoinListener(this), this);
+        pluginManager.registerEvents(new EditListener(this), this);
+        pluginManager.registerEvents(new InventoryOpenListener(this), this);
+        pluginManager.registerEvents(new ItemProtectionListener(this), this);
+        pluginManager.registerEvents(new DropTrackListener(this), this);
+        pluginManager.registerEvents(new AnvilGuardListener(this), this);
+        pluginManager.registerEvents(new GrindstoneGuardListener(this), this);
+        pluginManager.registerEvents(new MetaGuardListener(this), this);
+        pluginManager.registerEvents(new EnderChestGuardListener(this), this);
+        pluginManager.registerEvents(new BundleGuardListener(this), this);
+        pluginManager.registerEvents(new ShulkerGuardListener(this), this);
+        pluginManager.registerEvents(new ContainerGuardListener(this), this);
+    }
 }

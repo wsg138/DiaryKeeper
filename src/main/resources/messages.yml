@@ -2,12 +2,24 @@ prefix: "&6[Diary] &r"
 
 non-owner-edit: "&cYou can read this diary, but only the owner can edit it."
 signing-disabled: "&eDiaries stay writable; signing is disabled."
-ascii-only: "&cDiaries only allow standard English keyboard characters."
-void-returned: "&aThe diary you dropped into the void was returned to you."
-reload-complete: "&aConfig & messages reloaded."
+ascii-only: "&cDiaries only allow standard English keyboard characters and basic symbols."
+void-returned: "&aA diary that fell into the void was returned to you."
+reload-complete: "&aConfig, messages, and runtime settings reloaded."
 
-duplicate-found:
-  # Used for console/log; {owner}, {id}, {where}
-  log: "Duplicate diary detected: owner={owner}, id={id}, where={where}"
-  # Sent to diary.notify staff; {owner}, {id}, {where}
-  staff: "&eDuplicate diary detected&7: &f{owner}&7, &fID {id}&7, &f{where}"
+admin:
+  no-permission: "&cNo permission."
+  invalid-target: "&cThat player could not be resolved."
+  unknown-subcommand: "&cUnknown subcommand. Try /diary"
+  usage-header: "&eDiary commands:"
+  usage-reload: "&e/diary reload"
+  usage-issue: "&e/diary issue <player|uuid> &7- issue if never issued before"
+  usage-status: "&e/diary status <player|uuid> &7- show issuance and queue state"
+  issue-usage: "&cUsage: /diary issue <player|uuid>"
+  issue-success: "&aIssued a diary to &e{player}&a."
+  issue-queued: "&aIssued a diary to &e{player}&a and queued it for delivery."
+  issue-already-issued: "&e{player} has already been issued a diary."
+  status-usage: "&cUsage: /diary status <player|uuid>"
+  status-player: "&ePlayer: &f{player}"
+  status-issued: "&eIssued: &f{issued}"
+  status-diary-id: "&eDiary ID: &f{id}"
+  status-queued: "&eQueued Deliveries: &f{count}"

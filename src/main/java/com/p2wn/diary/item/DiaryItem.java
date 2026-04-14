@@ -1,15 +1,17 @@
 package com.p2wn.diary.item;
 
-import com.p2wn.diary.DiaryPlugin;
+import com.p2wn.diary.DiaryKeys;
+import com.p2wn.diary.config.ConfigManager;
+import com.p2wn.diary.data.DiaryStore;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.Material;
 import org.bukkit.OfflinePlayer;
 import org.bukkit.enchantments.Enchantment;
-import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemFlag;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.BookMeta;
+import org.bukkit.persistence.PersistentDataContainer;
 import org.bukkit.persistence.PersistentDataType;
 
 import java.util.ArrayList;
@@ -18,104 +20,138 @@ import java.util.UUID;
 
 public final class DiaryItem {
 
-    private DiaryItem() {}
+    private final ConfigManager configManager;
+    private final DiaryStore diaryStore;
+    private final DiaryKeys keys;
 
-    public static boolean isDiary(ItemStack stack) {
-        if (stack == null || stack.getType() != Material.WRITABLE_BOOK) return false;
-        var meta = stack.getItemMeta();
-        if (meta == null) return false;
-        Boolean marker = meta.getPersistentDataContainer()
-                .get(DiaryPlugin.get().keyIsDiary(), PersistentDataType.BOOLEAN);
-        return marker != null && marker;
+    public DiaryItem(ConfigManager configManager, DiaryStore diaryStore, DiaryKeys keys) {
+        this.configManager = configManager;
+        this.diaryStore = diaryStore;
+        this.keys = keys;
     }
 
-    public static UUID getOwner(ItemStack stack) {
-        if (!isDiary(stack)) return null;
-        String raw = stack.getItemMeta().getPersistentDataContainer()
-                .get(DiaryPlugin.get().keyOwnerUuid(), PersistentDataType.STRING);
-        try { return raw == null ? null : UUID.fromString(raw); }
-        catch (Exception e) { return null; }
+    public boolean isDiary(ItemStack stack) {
+        if (stack == null || stack.getType() != Material.WRITABLE_BOOK) {
+            return false;
+        }
+        if (!(stack.getItemMeta() instanceof BookMeta meta)) {
+            return false;
+        }
+        Boolean marker = meta.getPersistentDataContainer().get(keys.isDiary(), PersistentDataType.BOOLEAN);
+        return Boolean.TRUE.equals(marker);
     }
 
-    public static String getDiaryId(ItemStack stack) {
-        if (!isDiary(stack)) return null;
-        return stack.getItemMeta().getPersistentDataContainer()
-                .get(DiaryPlugin.get().keyDiaryId(), PersistentDataType.STRING);
+    public UUID getOwner(ItemStack stack) {
+        if (!isDiary(stack)) {
+            return null;
+        }
+        String raw = stack.getItemMeta().getPersistentDataContainer().get(keys.ownerUuid(), PersistentDataType.STRING);
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            return UUID.fromString(raw);
+        } catch (IllegalArgumentException ex) {
+            return null;
+        }
     }
 
-    public static ItemStack mintFor(Player owner) {
-        var pl = DiaryPlugin.get();
-        var cfg = pl.configManager().cfg();
-
-        String id = pl.diaryStore().getOrCreateId(owner.getUniqueId());
-
-        ItemStack book = new ItemStack(Material.WRITABLE_BOOK, 1);
-        var meta = book.getItemMeta();
-        if (!(meta instanceof BookMeta bm)) return book;
-
-        applyCanonicalAppearance(bm, owner.getUniqueId(), owner.getName(), id);
-
-        book.setItemMeta(bm);
-        return book;
+    public String getDiaryId(ItemStack stack) {
+        if (!isDiary(stack)) {
+            return null;
+        }
+        return stack.getItemMeta().getPersistentDataContainer().get(keys.diaryId(), PersistentDataType.STRING);
     }
 
-    /** Refresh cosmetic owner name (e.g., username changed). */
-    public static void refreshOwnerCosmetics(Player owner, ItemStack stack) {
-        if (!isDiary(stack)) return;
-        var id = getDiaryId(stack);
-        if (id == null) return;
-        var meta = stack.getItemMeta();
-        if (!(meta instanceof BookMeta bm)) return;
-
-        applyCanonicalAppearance(bm, owner.getUniqueId(), owner.getName(), id);
-        stack.setItemMeta(bm);
+    public UUID getLastDropper(ItemStack stack) {
+        if (!isDiary(stack)) {
+            return null;
+        }
+        String raw = stack.getItemMeta().getPersistentDataContainer().get(keys.lastDropper(), PersistentDataType.STRING);
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            return UUID.fromString(raw);
+        } catch (IllegalArgumentException ex) {
+            return null;
+        }
     }
 
-    /** Force title/lore/glint back to canonical (blocks rename/lore stripping by other plugins). */
-    public static void canonicalize(ItemStack stack) {
-        if (!isDiary(stack)) return;
-        var meta = stack.getItemMeta();
-        if (!(meta instanceof BookMeta bm)) return;
-
-        UUID owner = getOwner(stack);
-        String id = getDiaryId(stack);
-        if (owner == null || id == null) return;
-
-        String ownerName = owner.toString();
-        OfflinePlayer op = Bukkit.getOfflinePlayer(owner);
-        if (op != null && op.getName() != null) ownerName = op.getName();
-
-        applyCanonicalAppearance(bm, owner, ownerName, id);
-        stack.setItemMeta(bm);
+    public void setLastDropper(ItemStack stack, UUID playerId) {
+        if (!isDiary(stack) || playerId == null) {
+            return;
+        }
+        if (!(stack.getItemMeta() instanceof BookMeta meta)) {
+            return;
+        }
+        meta.getPersistentDataContainer().set(keys.lastDropper(), PersistentDataType.STRING, playerId.toString());
+        stack.setItemMeta(meta);
     }
 
-    private static void applyCanonicalAppearance(BookMeta bm, UUID ownerUuid, String ownerName, String id) {
-        var pl = DiaryPlugin.get();
-        var cfg = pl.configManager().cfg();
+    public ItemStack createDiary(UUID ownerId, String ownerName) {
+        String diaryId = diaryStore.getOrCreateDiaryId(ownerId);
+        ItemStack stack = new ItemStack(Material.WRITABLE_BOOK);
+        if (stack.getItemMeta() instanceof BookMeta meta) {
+            applyCanonicalAppearance(meta, ownerId, ownerName, diaryId);
+            stack.setItemMeta(meta);
+        }
+        return stack;
+    }
 
-        String name = cfg.getString("appearance.name-format", "&d{owner}'s Diary")
+    public void refreshOwnerCosmetics(UUID ownerId, String ownerName, ItemStack stack) {
+        if (!isDiary(stack)) {
+            return;
+        }
+        String diaryId = getDiaryId(stack);
+        if (diaryId == null || !(stack.getItemMeta() instanceof BookMeta meta)) {
+            return;
+        }
+        applyCanonicalAppearance(meta, ownerId, ownerName, diaryId);
+        stack.setItemMeta(meta);
+    }
+
+    public void canonicalize(ItemStack stack) {
+        if (!isDiary(stack)) {
+            return;
+        }
+
+        UUID ownerId = getOwner(stack);
+        String diaryId = getDiaryId(stack);
+        if (ownerId == null || diaryId == null || !(stack.getItemMeta() instanceof BookMeta meta)) {
+            return;
+        }
+
+        OfflinePlayer offlinePlayer = Bukkit.getOfflinePlayer(ownerId);
+        String ownerName = offlinePlayer.getName() != null ? offlinePlayer.getName() : ownerId.toString();
+        applyCanonicalAppearance(meta, ownerId, ownerName, diaryId);
+        stack.setItemMeta(meta);
+    }
+
+    private void applyCanonicalAppearance(BookMeta meta, UUID ownerId, String ownerName, String diaryId) {
+        String displayName = configManager.cfg().getString("appearance.name-format", "&d{owner}'s Diary")
                 .replace("{owner}", ownerName);
-        bm.setDisplayName(ChatColor.translateAlternateColorCodes('&', name));
+        meta.setDisplayName(ChatColor.translateAlternateColorCodes('&', displayName));
 
-        List<String> loreCfg = cfg.getStringList("appearance.lore");
         List<String> lore = new ArrayList<>();
-        for (String line : loreCfg) {
+        for (String line : configManager.cfg().getStringList("appearance.lore")) {
             lore.add(ChatColor.translateAlternateColorCodes('&',
                     line.replace("{owner}", ownerName)
-                            .replace("{id-short}", id.substring(0, 8))));
+                            .replace("{id-short}", diaryId.substring(0, Math.min(8, diaryId.length())))));
         }
-        bm.setLore(lore);
+        meta.setLore(lore);
 
-        if (cfg.getBoolean("appearance.enchanted-glint", true)) {
-            bm.addEnchant(Enchantment.UNBREAKING, 1, true);
-            bm.addItemFlags(ItemFlag.HIDE_ENCHANTS);
+        if (configManager.cfg().getBoolean("appearance.enchanted-glint", true)) {
+            meta.addEnchant(Enchantment.UNBREAKING, 1, true);
+            meta.addItemFlags(ItemFlag.HIDE_ENCHANTS);
         } else {
-            bm.removeEnchant(Enchantment.UNBREAKING);
+            meta.removeEnchant(Enchantment.UNBREAKING);
+            meta.removeItemFlags(ItemFlag.HIDE_ENCHANTS);
         }
 
-        var pdc = bm.getPersistentDataContainer();
-        pdc.set(pl.keyIsDiary(), PersistentDataType.BOOLEAN, true);
-        pdc.set(pl.keyOwnerUuid(), PersistentDataType.STRING, ownerUuid.toString());
-        pdc.set(pl.keyDiaryId(), PersistentDataType.STRING, id);
+        PersistentDataContainer pdc = meta.getPersistentDataContainer();
+        pdc.set(keys.isDiary(), PersistentDataType.BOOLEAN, true);
+        pdc.set(keys.ownerUuid(), PersistentDataType.STRING, ownerId.toString());
+        pdc.set(keys.diaryId(), PersistentDataType.STRING, diaryId);
     }
 }

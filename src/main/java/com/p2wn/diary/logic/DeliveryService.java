@@ -1,97 +1,121 @@
 package com.p2wn.diary.logic;
 
-import com.p2wn.diary.DiaryPlugin;
+import com.p2wn.diary.data.DeliveryReason;
+import com.p2wn.diary.data.DiaryStore;
+import com.p2wn.diary.data.PendingDelivery;
 import org.bukkit.Bukkit;
-import org.bukkit.Location;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.plugin.Plugin;
 import org.bukkit.scheduler.BukkitTask;
 
-import java.util.*;
+import java.util.List;
+import java.util.Set;
+import java.util.UUID;
 
-public class DeliveryService {
+public final class DeliveryService {
 
-    private static final class Parcel {
-        final UUID player;
-        final ItemStack item;
-        int attempts = 0;
-        Parcel(UUID p, ItemStack i) { player = p; item = i; }
-    }
-
-    private final DiaryPlugin plugin;
-    private final Deque<Parcel> queue = new ArrayDeque<>();
+    private final Plugin plugin;
+    private final DiaryStore diaryStore;
     private BukkitTask task;
+    private DiaryService diaryService;
 
-    public DeliveryService(DiaryPlugin plugin) {
+    public DeliveryService(Plugin plugin, DiaryStore diaryStore) {
         this.plugin = plugin;
+        this.diaryStore = diaryStore;
     }
 
-    public void enqueue(UUID player, ItemStack item) {
-        if (item == null) return;
-        queue.addLast(new Parcel(player, item.clone()));
-        ensureRunning();
+    public void setDiaryService(DiaryService diaryService) {
+        this.diaryService = diaryService;
     }
 
-    public void enqueueAll(UUID player, Collection<ItemStack> items) {
-        for (ItemStack it : items) enqueue(player, it);
+    public void queue(UUID playerId, DeliveryReason reason, ItemStack item) {
+        diaryStore.queueDelivery(playerId, reason, item);
+        requestDelivery(playerId);
+    }
+
+    public void requestDelivery(UUID playerId) {
+        if (diaryStore.getPendingDeliveryCount(playerId) > 0) {
+            ensureRunning();
+        }
+    }
+
+    public void reloadSettings() {
+        stop();
+        if (!diaryStore.getPlayersWithPendingDeliveries().isEmpty()) {
+            ensureRunning();
+        }
+    }
+
+    public void shutdown() {
+        stop();
     }
 
     private void ensureRunning() {
-        if (task != null) return;
-        task = Bukkit.getScheduler().runTaskTimer(plugin, this::tick, 10, 20); // start after 0.5s, then every 1s
+        if (task != null) {
+            return;
+        }
+        int interval = Math.max(10, plugin.getConfig().getInt("delivery.retry-interval-ticks", 20));
+        task = Bukkit.getScheduler().runTaskTimer(plugin, this::tick, interval, interval);
     }
 
-    public void stopIfIdle(boolean force) {
-        if (force || queue.isEmpty()) {
-            if (task != null) { task.cancel(); task = null; }
+    private void stop() {
+        if (task != null) {
+            task.cancel();
+            task = null;
         }
     }
 
     private void tick() {
-        if (queue.isEmpty()) { stopIfIdle(false); return; }
-
-        int batch = Math.min(queue.size(), 8); // small batch per second
-        for (int i = 0; i < batch; i++) {
-            Parcel p = queue.pollFirst();
-            if (p == null) break;
-
-            Player pl = Bukkit.getPlayer(p.player);
-            if (pl == null || !pl.isOnline()) {
-                // Still offline â€” requeue to try later
-                if (++p.attempts <= 120) { // try for up to ~2 minutes of online checks
-                    queue.addLast(p);
-                }
-                continue;
-            }
-
-            // If player is hovering over the void, avoid dropping; try again later
-            int minY = pl.getWorld().getMinHeight();
-            if (pl.getLocation().getY() < (minY + 4)) {
-                if (++p.attempts <= 20) { // give ~20s to get to safety
-                    queue.addLast(p);
-                } else {
-                    // Fallback: drop at world spawn location safely
-                    Location safe = pl.getWorld().getSpawnLocation().add(0, 1, 0);
-                    pl.getWorld().dropItemNaturally(safe, p.item);
-                }
-                continue;
-            }
-
-            // Try inventory
-            var leftovers = pl.getInventory().addItem(p.item);
-            if (!leftovers.isEmpty()) {
-                // Inventory full â€” keep trying a bit, then drop at their feet (safe location)
-                if (++p.attempts <= 10) {
-                    queue.addLast(p);
-                } else {
-                    pl.getWorld().dropItemNaturally(pl.getLocation(), p.item);
-                }
-            } else {
-                // success
-                pl.sendMessage(plugin.configManager().msg("void-returned"));
-            }
+        Set<UUID> playerIds = diaryStore.getPlayersWithPendingDeliveries();
+        if (playerIds.isEmpty()) {
+            stop();
+            return;
         }
 
-        stopIfIdle(false);
+        int maxPlayersPerTick = Math.max(1, plugin.getConfig().getInt("delivery.max-players-per-tick", 10));
+        int maxItemsPerPlayer = Math.max(1, plugin.getConfig().getInt("delivery.max-items-per-player-per-tick", 2));
+
+        int processedPlayers = 0;
+        for (UUID playerId : playerIds) {
+            if (processedPlayers >= maxPlayersPerTick) {
+                break;
+            }
+
+            Player player = Bukkit.getPlayer(playerId);
+            if (player == null || !player.isOnline()) {
+                continue;
+            }
+
+            List<PendingDelivery> deliveries = diaryStore.getPendingDeliveries(playerId, maxItemsPerPlayer);
+            if (deliveries.isEmpty()) {
+                continue;
+            }
+
+            int deliveredCount = 0;
+            for (PendingDelivery delivery : deliveries) {
+                ItemStack item = delivery.item().clone();
+                if (!player.getInventory().addItem(item).isEmpty()) {
+                    break;
+                }
+
+                deliveredCount++;
+
+                if (delivery.reason() == DeliveryReason.VOID_RETURN) {
+                    diaryService.onVoidReturnDelivered(player, delivery.item());
+                }
+            }
+
+            if (deliveredCount > 0) {
+                diaryStore.removeFirstPendingDeliveries(playerId, deliveredCount);
+                diaryService.refreshOwnedDiaries(player);
+            }
+
+            processedPlayers++;
+        }
+
+        if (diaryStore.getPlayersWithPendingDeliveries().isEmpty()) {
+            stop();
+        }
     }
 }

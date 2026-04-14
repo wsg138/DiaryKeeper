@@ -1,41 +1,43 @@
-# DiaryKeeper Configuration
+# DiaryKeeper configuration
+#
+# Notes:
+# - Diaries stay WRITABLE_BOOK items forever unless you intentionally redesign that behavior in code.
+# - The plugin keeps text validation strict ASCII-only to reduce book-ban style abuse.
+# - Delivery fallback is queue-only. If a player is offline or full, the diary waits safely.
 
 give-on-first-join: true
 
-# Editing/signing
-allow-signing: false              # keep it writable forever
+# Editing / signing
+allow-signing: false
 owner-only-edit: true
 
 restrictions:
-  enderchest: true              # block diaries (and bundles containing diary) into ender chests
-  bundles: true                 # block diaries from going into bundles
-  shulkers: false               # block diaries (and bundles containing diary) into shulker boxes
-  chests: false                 # block diaries into chests (single/double, trapped)
-  barrels: false                # block diaries into barrels
-  hoppers: false                # block diaries into hoppers
-  droppers: false               # block diaries into droppers
-  dispensers: false             # block diaries into dispensers
-  furnaces: false               # block diaries into furnaces, smokers, and blast furnaces
+  enderchest: true
+  bundles: true
+  shulkers: false
+  chests: false
+  barrels: false
+  hoppers: false
+  droppers: false
+  dispensers: false
+  furnaces: false
 
-
-# Movement freedom (collectible design)
+# Legacy behavior flag kept for compatibility.
+# Container restriction listeners still enforce the specific restriction keys above.
 allow-drop: true
-allow-container-move: true        # chests/shulkers/hoppers etc.
+allow-container-move: true
 
-# Indestructibility in-world
 indestructible:
   prevent-combust: true
   prevent-explosion: true
-  prevent-contact-damage: true    # cactus/void/contact & generic damage to item entities
+  prevent-contact-damage: true
   prevent-despawn: true
 
-# Void handling
 void:
-  return-to-dropper: true         # return to the player who dropped it
-  check-interval-ticks: 10        # only runs while tracked dropped diaries exist
-  safe-drop-if-inventory-full: true
+  return-to-dropper: true
+  check-interval-ticks: 10
+  safe-drop-if-inventory-full: false
 
-# Appearance
 appearance:
   enchanted-glint: true
   name-format: "&d{owner}'s Diary"
@@ -44,11 +46,22 @@ appearance:
     - "&7Owner: &f{owner}"
     - "&8ID: {id-short}"
 
-# Duplicate detection (warn-only)
 duplicates:
   warn-on-join: true
   warn-on-container-open: true
   warn-on-chunk-load: true
   warn-on-startup: true
-  staff-notify: true              # send to players with diary.notify
+  staff-notify: true
   debounce-seconds: 60
+  max-listed-occurrences: 5
+
+# Delivery queue tuning.
+# These values cap work per tick so the plugin stays predictable with many players online.
+delivery:
+  retry-interval-ticks: 20
+  max-players-per-tick: 10
+  max-items-per-player-per-tick: 2
+
+# Periodic persistence for player diary IDs and queued deliveries.
+storage:
+  save-interval-ticks: 1200

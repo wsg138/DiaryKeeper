@@ -1,17 +1,17 @@
 name: DiaryKeeper
 main: com.p2wn.diary.DiaryPlugin
-version: 1.0.0
+version: 1.1.0
 api-version: '1.21'
 authors: [ P2wn ]
-description: One-of-a-kind, owner-editable collectible diaries (indestructible, void-safe, warn on duplicates)
+description: One-of-a-kind, owner-editable collectible diaries with safe queueing and duplicate warnings
 commands:
   diary:
     description: Diary admin
-    usage: /diary <reload|issue <player>|status <player>>
+    usage: /diary <reload|issue <player|uuid>|status <player|uuid>>
     permission: diary.admin
 
 permissions:
   diary.admin:
     default: op
   diary.notify:
-    default: op   # Give this to mods/staff via LuckPerms
+    default: op

@@ -22,4 +22,8 @@ public final class DiaryTextValidator {
 
         return true;
     }
+
+    public static boolean isAllowedBookText(String text) {
+        return isAsciiOnly(text);
+    }
 }

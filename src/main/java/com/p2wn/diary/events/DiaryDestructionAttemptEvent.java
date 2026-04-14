@@ -6,7 +6,7 @@ import org.bukkit.event.HandlerList;
 
 /**
  * Fired when something attempts to destroy a diary (fire, explosion, despawn, etc.).
- * The diary is always protected â€” this event is informational only.
+ * The diary is always protected; this event is informational only.
  */
 public class DiaryDestructionAttemptEvent extends Event {
 

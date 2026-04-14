@@ -1,117 +1,150 @@
 package com.p2wn.diary.logic;
 
-import com.p2wn.diary.DiaryPlugin;
-import com.p2wn.diary.events.DiaryVoidReturnEvent;
+import com.p2wn.diary.config.ConfigManager;
+import com.p2wn.diary.data.DeliveryReason;
 import com.p2wn.diary.item.DiaryItem;
 import org.bukkit.Bukkit;
+import org.bukkit.World;
+import org.bukkit.entity.Entity;
 import org.bukkit.entity.Item;
 import org.bukkit.entity.Player;
-import org.bukkit.inventory.ItemStack;
-import org.bukkit.persistence.PersistentDataType;
+import org.bukkit.plugin.Plugin;
 import org.bukkit.scheduler.BukkitTask;
 
-import java.util.*;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.UUID;
 
-public class VoidWatcher {
+public final class VoidWatcher {
 
-    private final DiaryPlugin plugin;
-    private final DeliveryService delivery;
-    private final Set<UUID> tracked = new HashSet<>();
+    private record TrackedDrop(UUID worldId) {}
+
+    private final Plugin plugin;
+    private final ConfigManager configManager;
+    private final DiaryItem diaryItem;
+    private final DeliveryService deliveryService;
+    private final DuplicateWatcher duplicateWatcher;
+
+    private final Map<UUID, TrackedDrop> trackedDrops = new HashMap<>();
     private BukkitTask task;
 
-    public VoidWatcher(DiaryPlugin plugin, DeliveryService delivery) {
+    public VoidWatcher(
+            Plugin plugin,
+            ConfigManager configManager,
+            DiaryItem diaryItem,
+            DeliveryService deliveryService,
+            DuplicateWatcher duplicateWatcher
+    ) {
         this.plugin = plugin;
-        this.delivery = delivery;
+        this.configManager = configManager;
+        this.diaryItem = diaryItem;
+        this.deliveryService = deliveryService;
+        this.duplicateWatcher = duplicateWatcher;
     }
 
     public void track(Item item) {
-        if (item == null || item.isDead()) return;
-        if (!DiaryItem.isDiary(item.getItemStack())) return;
-        tracked.add(item.getUniqueId());
+        if (!configManager.cfg().getBoolean("void.return-to-dropper", true)) {
+            return;
+        }
+        if (item == null || item.isDead() || !diaryItem.isDiary(item.getItemStack())) {
+            return;
+        }
+        trackedDrops.put(item.getUniqueId(), new TrackedDrop(item.getWorld().getUID()));
         ensureRunning();
     }
 
     public void untrack(Item item) {
-        if (item == null) return;
-        tracked.remove(item.getUniqueId());
-        stopIfIdle(false);
+        if (item == null) {
+            return;
+        }
+        trackedDrops.remove(item.getUniqueId());
+        duplicateWatcher.removeGroundItemSnapshot(item.getUniqueId());
+        stopIfIdle();
+    }
+
+    public void reloadSettings() {
+        stop();
+        if (!trackedDrops.isEmpty() && configManager.cfg().getBoolean("void.return-to-dropper", true)) {
+            ensureRunning();
+        }
+    }
+
+    public void shutdown() {
+        stop();
+        trackedDrops.clear();
     }
 
     private void ensureRunning() {
-        if (task != null) return;
-        int interval = plugin.configManager().cfg().getInt("void.check-interval-ticks", 10);
+        if (task != null) {
+            return;
+        }
+        int interval = Math.max(5, configManager.cfg().getInt("void.check-interval-ticks", 10));
         task = Bukkit.getScheduler().runTaskTimer(plugin, this::tick, interval, interval);
     }
 
-    public void stopIfIdle(boolean force) {
-        if (force || tracked.isEmpty()) {
-            if (task != null) { task.cancel(); task = null; }
+    private void stopIfIdle() {
+        if (trackedDrops.isEmpty()) {
+            stop();
+        }
+    }
+
+    private void stop() {
+        if (task != null) {
+            task.cancel();
+            task = null;
         }
     }
 
     private void tick() {
-        if (tracked.isEmpty()) { stopIfIdle(false); return; }
+        if (trackedDrops.isEmpty()) {
+            stop();
+            return;
+        }
 
-        List<UUID> toRemove = new ArrayList<>();
-
-        for (UUID id : tracked) {
-            var ent = findItem(id);
-            if (ent == null || ent.isDead() || ent.getItemStack() == null) {
-                toRemove.add(id);
+        Iterator<Map.Entry<UUID, TrackedDrop>> iterator = trackedDrops.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<UUID, TrackedDrop> entry = iterator.next();
+            Item item = findTrackedItem(entry.getKey(), entry.getValue().worldId());
+            if (item == null || item.isDead() || !diaryItem.isDiary(item.getItemStack())) {
+                iterator.remove();
                 continue;
             }
 
-            int minY = ent.getWorld().getMinHeight();
-            if (ent.getLocation().getY() < (minY - 2)) {
-                handleVoid(ent);
-                toRemove.add(id);
+            int minY = item.getWorld().getMinHeight();
+            if (item.getLocation().getY() < (minY - 2)) {
+                handleVoid(item);
+                iterator.remove();
             }
         }
 
-        for (UUID id : toRemove) tracked.remove(id);
-        stopIfIdle(false);
+        stopIfIdle();
     }
 
-    private Item findItem(UUID id) {
-        for (var w : Bukkit.getWorlds()) {
-            var e = w.getEntity(id);
-            if (e instanceof Item i) return i;
+    private Item findTrackedItem(UUID entityId, UUID worldId) {
+        World world = Bukkit.getWorld(worldId);
+        if (world == null) {
+            return null;
         }
-        return null;
+        Entity entity = world.getEntity(entityId);
+        return entity instanceof Item item ? item : null;
     }
 
     private void handleVoid(Item item) {
-        if (!plugin.configManager().cfg().getBoolean("void.return-to-dropper", true)) {
+        duplicateWatcher.removeGroundItemSnapshot(item.getUniqueId());
+
+        if (!configManager.cfg().getBoolean("void.return-to-dropper", true)) {
             item.remove();
             return;
         }
 
-        ItemStack stack = item.getItemStack();
-        if (!DiaryItem.isDiary(stack)) { item.remove(); return; }
+        UUID dropperId = diaryItem.getLastDropper(item.getItemStack());
+        if (dropperId == null) {
+            item.remove();
+            return;
+        }
 
-        String dropperStr = stack.getItemMeta().getPersistentDataContainer()
-                .get(plugin.keyLastDropper(), PersistentDataType.STRING);
-
-        item.remove(); // remove the falling entity
-
-        if (dropperStr == null) return;
-
-        try {
-            UUID dropperId = UUID.fromString(dropperStr);
-            Player dropper = Bukkit.getPlayer(dropperId);
-            if (dropper != null && dropper.isOnline()) {
-                // Try once; if full/unsafe, hand to DeliveryService for safe retries
-                var leftovers = dropper.getInventory().addItem(stack);
-                if (!leftovers.isEmpty()) {
-                    delivery.enqueue(dropperId, stack);
-                } else {
-                    Bukkit.getPluginManager().callEvent(new DiaryVoidReturnEvent(dropper, stack));
-                    dropper.sendMessage(plugin.configManager().msg("void-returned"));
-                }
-            } else {
-                // Offline exact return â€” persist and deliver at next login
-                plugin.diaryStore().queueVoidReturn(dropperId, stack);
-            }
-        } catch (Exception ignored) {}
+        deliveryService.queue(dropperId, DeliveryReason.VOID_RETURN, item.getItemStack().clone());
+        item.remove();
     }
 }
