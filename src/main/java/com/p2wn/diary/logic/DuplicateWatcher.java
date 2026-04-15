@@ -6,14 +6,18 @@ import com.p2wn.diary.item.DiaryItem;
 import org.bukkit.Bukkit;
 import org.bukkit.Chunk;
 import org.bukkit.Location;
+import org.bukkit.Material;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockState;
+import org.bukkit.block.ShulkerBox;
 import org.bukkit.entity.HumanEntity;
 import org.bukkit.entity.Item;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.BlockStateMeta;
+import org.bukkit.inventory.meta.BundleMeta;
 import org.bukkit.plugin.Plugin;
 
 import java.time.Instant;
@@ -48,15 +52,8 @@ public final class DuplicateWatcher {
         List<Occurrence> occurrences = new ArrayList<>();
         String holderName = player.getName();
         String coords = coordsOf(player.getLocation());
-        for (ItemStack stack : player.getInventory().getContents()) {
-            if (!diaryItem.isDiary(stack)) {
-                continue;
-            }
-            String diaryId = diaryItem.getDiaryId(stack);
-            if (diaryId != null) {
-                occurrences.add(new Occurrence(diaryId, holderName, "player", coords));
-            }
-        }
+        scanInventoryContents(player.getInventory().getContents(), holderName, "player", coords, occurrences);
+        scanInventoryContents(player.getEnderChest().getContents(), holderName, "ender_chest", coords, occurrences);
         playerSnapshots.put(player.getUniqueId(), occurrences);
     }
 
@@ -146,16 +143,44 @@ public final class DuplicateWatcher {
         }
 
         List<Occurrence> occurrences = new ArrayList<>();
-        for (ItemStack stack : inventory.getContents()) {
-            if (!diaryItem.isDiary(stack)) {
-                continue;
-            }
+        scanInventoryContents(inventory.getContents(), holderName, whereTag, coords, occurrences);
+        return occurrences;
+    }
+
+    private void scanInventoryContents(ItemStack[] contents, String holderName, String whereTag, String coords, List<Occurrence> out) {
+        if (contents == null) {
+            return;
+        }
+        for (ItemStack stack : contents) {
+            scanItemStack(stack, holderName, whereTag, coords, out);
+        }
+    }
+
+    private void scanItemStack(ItemStack stack, String holderName, String whereTag, String coords, List<Occurrence> out) {
+        if (stack == null || stack.getType().isAir()) {
+            return;
+        }
+
+        if (diaryItem.isDiary(stack)) {
             String diaryId = diaryItem.getDiaryId(stack);
             if (diaryId != null) {
-                occurrences.add(new Occurrence(diaryId, holderName, whereTag, coords));
+                out.add(new Occurrence(diaryId, holderName, whereTag, coords));
+            }
+            return;
+        }
+
+        if (stack.getType() == Material.BUNDLE && stack.hasItemMeta() && stack.getItemMeta() instanceof BundleMeta bundleMeta) {
+            for (ItemStack nested : bundleMeta.getItems()) {
+                scanItemStack(nested, holderName, "bundle->" + whereTag, coords, out);
+            }
+            return;
+        }
+
+        if (stack.hasItemMeta() && stack.getItemMeta() instanceof BlockStateMeta blockStateMeta && blockStateMeta.getBlockState() instanceof ShulkerBox shulkerBox) {
+            for (ItemStack nested : shulkerBox.getInventory().getContents()) {
+                scanItemStack(nested, holderName, "shulker->" + whereTag, coords, out);
             }
         }
-        return occurrences;
     }
 
     private List<Occurrence> scanChunkItems(Chunk chunk) {

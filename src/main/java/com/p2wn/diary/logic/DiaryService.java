@@ -108,6 +108,7 @@ public final class DiaryService {
             Bukkit.getPluginManager().callEvent(new DiaryReceivedEvent(player, diary.clone()));
             deliverOrQueue(player, DeliveryReason.INITIAL_ISSUE, diary);
             diaryStore.markIssued(player.getUniqueId());
+            diaryStore.flushNow();
         }
 
         deliveryService.requestDelivery(player.getUniqueId());
@@ -142,6 +143,7 @@ public final class DiaryService {
             deliveryService.queue(playerId, DeliveryReason.ADMIN_ISSUE, diary);
             resultType = IssueResultType.QUEUED_FOR_DELIVERY;
         }
+        diaryStore.flushNow();
 
         return new IssueResult(resultType, playerId, targetName);
     }

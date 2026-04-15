@@ -8,6 +8,7 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityPickupItemEvent;
 import org.bukkit.event.entity.ItemSpawnEvent;
 import org.bukkit.event.inventory.InventoryMoveItemEvent;
+import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.player.PlayerDropItemEvent;
 
 public final class DropTrackListener implements Listener {
@@ -31,6 +32,19 @@ public final class DropTrackListener implements Listener {
         plugin.duplicateWatcher().refreshGroundItemSnapshot(item);
         plugin.duplicateWatcher().refreshPlayerSnapshot(event.getPlayer());
         plugin.voidWatcher().track(item);
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onDeath(PlayerDeathEvent event) {
+        for (int i = 0; i < event.getDrops().size(); i++) {
+            var drop = event.getDrops().get(i);
+            if (!plugin.diaryService().isDiary(drop)) {
+                continue;
+            }
+            var tagged = drop.clone();
+            plugin.diaryService().tagLastDropper(tagged, event.getEntity().getUniqueId());
+            event.getDrops().set(i, tagged);
+        }
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)

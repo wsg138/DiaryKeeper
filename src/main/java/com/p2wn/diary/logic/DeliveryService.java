@@ -37,6 +37,7 @@ public final class DeliveryService {
 
     public void queue(UUID playerId, DeliveryReason reason, ItemStack item) {
         diaryStore.queueDelivery(playerId, reason, item);
+        diaryStore.flushNow();
         if (trackerService != null) {
             OfflinePlayer offlinePlayer = Bukkit.getOfflinePlayer(playerId);
             String playerName = offlinePlayer.getName() != null ? offlinePlayer.getName() : playerId.toString();
