@@ -1,6 +1,8 @@
 package com.p2wn.diary.logic;
 
 import com.p2wn.diary.config.ConfigManager;
+import com.p2wn.diary.data.DiaryAnalyticsEventType;
+import com.p2wn.diary.data.DiaryAnalyticsStore;
 import com.p2wn.diary.data.DeliveryReason;
 import com.p2wn.diary.data.DiaryStore;
 import com.p2wn.diary.events.DiaryFilledEvent;
@@ -43,6 +45,7 @@ public final class DiaryService {
     private DiaryTrackerService trackerService;
     private DiaryRestoreService restoreService;
     private DuplicateWatcher duplicateWatcher;
+    private DiaryAnalyticsStore analyticsStore;
 
     public DiaryService(Plugin plugin, ConfigManager configManager, DiaryStore diaryStore, DiaryItem diaryItem, DeliveryService deliveryService) {
         this.plugin = plugin;
@@ -62,6 +65,10 @@ public final class DiaryService {
 
     public void setRestoreService(DiaryRestoreService restoreService) {
         this.restoreService = restoreService;
+    }
+
+    public void setAnalyticsStore(DiaryAnalyticsStore analyticsStore) {
+        this.analyticsStore = analyticsStore;
     }
 
     public boolean isDiary(ItemStack stack) {
@@ -142,6 +149,9 @@ public final class DiaryService {
         } else {
             deliveryService.queue(playerId, DeliveryReason.ADMIN_ISSUE, diary);
             resultType = IssueResultType.QUEUED_FOR_DELIVERY;
+        }
+        if (analyticsStore != null) {
+            analyticsStore.record(DiaryAnalyticsEventType.ADMIN_ISSUE, playerId, targetName, diaryItem.getDiaryId(diary), resultType.name());
         }
         diaryStore.flushNow();
 

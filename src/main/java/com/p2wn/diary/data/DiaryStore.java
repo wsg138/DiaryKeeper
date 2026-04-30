@@ -196,6 +196,14 @@ public final class DiaryStore {
         return results;
     }
 
+    public int getTotalPendingDeliveryCount() {
+        int total = 0;
+        for (PlayerRecord record : records.values()) {
+            total += record.pendingDeliveries.size();
+        }
+        return total;
+    }
+
     public void queuePendingRemoval(UUID playerId, PendingRemoval pendingRemoval) {
         PlayerRecord record = getOrCreateRecord(playerId);
         record.pendingRemovals.addLast(pendingRemoval);
@@ -243,6 +251,11 @@ public final class DiaryStore {
         return record == null ? null : record.diaryId;
     }
 
+    public TrackedDiaryRecord findTrackedDiaryByOwner(UUID ownerUuid) {
+        String diaryId = findDiaryIdByOwner(ownerUuid);
+        return diaryId == null ? null : getTrackedDiary(diaryId);
+    }
+
     public String findDiaryIdByExactOrPrefix(String query) {
         if (query == null || query.isBlank()) {
             return null;
@@ -264,6 +277,35 @@ public final class DiaryStore {
 
     public Set<UUID> getTrackedOwners() {
         return Set.copyOf(records.keySet());
+    }
+
+    public int getIssuedPlayerCount() {
+        int count = 0;
+        for (PlayerRecord record : records.values()) {
+            if (record.issuedAt != null && record.diaryId != null) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    public int getTrackedDiaryCount() {
+        return diaryRecords.size();
+    }
+
+    public List<TrackedDiaryRecord> getRecentTrackedDiaries(int limit) {
+        if (limit <= 0 || diaryRecords.isEmpty()) {
+            return Collections.emptyList();
+        }
+        return diaryRecords.entrySet().stream()
+                .map(entry -> getTrackedDiary(entry.getKey()))
+                .filter(Objects::nonNull)
+                .sorted((left, right) -> Long.compare(
+                        right.lastKnownLocation() == null ? 0L : right.lastKnownLocation().updatedAtEpochSeconds(),
+                        left.lastKnownLocation() == null ? 0L : left.lastKnownLocation().updatedAtEpochSeconds()
+                ))
+                .limit(limit)
+                .toList();
     }
 
     public void flushIfDirty() {

@@ -62,6 +62,18 @@ delivery:
   max-players-per-tick: 10
   max-items-per-player-per-tick: 2
 
+# Optional Plan Player Analytics integration.
+# DiaryKeeper keeps this data itself first, then exposes a focused subset to Plan when installed.
+integrations:
+  plan:
+    enabled: true
+    recent-table-size: 10
+
+# Bounded activity history used by admin views and optional analytics integrations.
+analytics:
+  retention-days: 30
+  max-events: 1000
+
 # Periodic persistence for player diary IDs and queued deliveries.
 storage:
   save-interval-ticks: 1200

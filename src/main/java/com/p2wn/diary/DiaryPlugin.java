@@ -2,11 +2,14 @@ package com.p2wn.diary;
 
 import com.p2wn.diary.commands.DiaryCommand;
 import com.p2wn.diary.config.ConfigManager;
+import com.p2wn.diary.data.DiaryAnalyticsStore;
 import com.p2wn.diary.data.DiaryStore;
+import com.p2wn.diary.integrations.plan.DiaryPlanHook;
 import com.p2wn.diary.item.DiaryItem;
 import com.p2wn.diary.listeners.AnvilGuardListener;
 import com.p2wn.diary.listeners.BundleGuardListener;
 import com.p2wn.diary.listeners.ContainerGuardListener;
+import com.p2wn.diary.listeners.DiaryAnalyticsListener;
 import com.p2wn.diary.listeners.DiaryTrackingListener;
 import com.p2wn.diary.listeners.DropTrackListener;
 import com.p2wn.diary.listeners.EditListener;
@@ -36,6 +39,7 @@ public final class DiaryPlugin extends JavaPlugin {
 
     private ConfigManager configManager;
     private DiaryStore diaryStore;
+    private DiaryAnalyticsStore diaryAnalyticsStore;
     private DiaryKeys diaryKeys;
     private DiaryItem diaryItem;
     private RestrictionService restrictionService;
@@ -46,6 +50,7 @@ public final class DiaryPlugin extends JavaPlugin {
     private DiaryTrackerService diaryTrackerService;
     private DiaryRestoreService diaryRestoreService;
     private RestoreGuiListener restoreGuiListener;
+    private DiaryPlanHook planHook;
 
     @Override
     public void onEnable() {
@@ -56,6 +61,9 @@ public final class DiaryPlugin extends JavaPlugin {
         diaryStore = new DiaryStore(this);
         diaryStore.load();
         diaryStore.reloadAutosave();
+        diaryAnalyticsStore = new DiaryAnalyticsStore(this);
+        diaryAnalyticsStore.load();
+        diaryAnalyticsStore.reloadAutosave();
 
         handleWorldReset();
 
@@ -72,11 +80,14 @@ public final class DiaryPlugin extends JavaPlugin {
         diaryService.setDuplicateWatcher(duplicateWatcher);
         diaryService.setTrackerService(diaryTrackerService);
         diaryService.setRestoreService(diaryRestoreService);
+        diaryService.setAnalyticsStore(diaryAnalyticsStore);
         deliveryService.setDiaryService(diaryService);
         deliveryService.setTrackerService(diaryTrackerService);
+        deliveryService.setAnalyticsStore(diaryAnalyticsStore);
 
         registerCommand();
         registerListeners();
+        registerPlanIntegration();
 
         duplicateWatcher.sweepStartup();
         deliveryService.reloadSettings();
@@ -86,6 +97,10 @@ public final class DiaryPlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        if (planHook != null) {
+            planHook.unregister();
+            planHook = null;
+        }
         if (voidWatcher != null) {
             voidWatcher.shutdown();
         }
@@ -95,15 +110,21 @@ public final class DiaryPlugin extends JavaPlugin {
         if (diaryStore != null) {
             diaryStore.shutdown();
         }
+        if (diaryAnalyticsStore != null) {
+            diaryAnalyticsStore.shutdown();
+        }
     }
 
     public void reloadPluginState() {
         diaryStore.flushNow();
         configManager.reload();
         diaryStore.reloadAutosave();
+        diaryAnalyticsStore.reloadAutosave();
+        diaryAnalyticsStore.reloadRetention();
         deliveryService.reloadSettings();
         voidWatcher.reloadSettings();
         duplicateWatcher.sweepStartup();
+        reloadPlanIntegration();
     }
 
     public ConfigManager configManager() {
@@ -112,6 +133,10 @@ public final class DiaryPlugin extends JavaPlugin {
 
     public DiaryStore diaryStore() {
         return diaryStore;
+    }
+
+    public DiaryAnalyticsStore diaryAnalyticsStore() {
+        return diaryAnalyticsStore;
     }
 
     public DiaryKeys diaryKeys() {
@@ -183,6 +208,7 @@ public final class DiaryPlugin extends JavaPlugin {
     private void registerListeners() {
         var pluginManager = getServer().getPluginManager();
         pluginManager.registerEvents(new JoinListener(this), this);
+        pluginManager.registerEvents(new DiaryAnalyticsListener(this), this);
         pluginManager.registerEvents(new EditListener(this), this);
         pluginManager.registerEvents(new InventoryOpenListener(this), this);
         pluginManager.registerEvents(new ItemProtectionListener(this), this);
@@ -196,5 +222,32 @@ public final class DiaryPlugin extends JavaPlugin {
         pluginManager.registerEvents(new ShulkerGuardListener(this), this);
         pluginManager.registerEvents(new ContainerGuardListener(this), this);
         pluginManager.registerEvents(restoreGuiListener, this);
+    }
+
+    private void registerPlanIntegration() {
+        if (!configManager.cfg().getBoolean("integrations.plan.enabled", true)) {
+            getLogger().fine("Plan integration is disabled in config.");
+            return;
+        }
+        if (!getServer().getPluginManager().isPluginEnabled("Plan")) {
+            getLogger().fine("Plan is not installed or enabled; skipping DiaryKeeper Plan integration.");
+            return;
+        }
+        try {
+            planHook = new DiaryPlanHook(this);
+            planHook.hookIntoPlan();
+        } catch (NoClassDefFoundError | ExceptionInInitializerError ex) {
+            getLogger().fine("Plan API unavailable; skipping DiaryKeeper Plan integration.");
+        } catch (RuntimeException ex) {
+            getLogger().warning("Failed to register DiaryKeeper Plan integration: " + ex.getMessage());
+        }
+    }
+
+    private void reloadPlanIntegration() {
+        if (planHook != null) {
+            planHook.unregister();
+            planHook = null;
+        }
+        registerPlanIntegration();
     }
 }

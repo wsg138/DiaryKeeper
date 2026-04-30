@@ -5,7 +5,7 @@
 
     <groupId>com.p2wn</groupId>
     <artifactId>DiaryKeeper</artifactId>
-    <version>1.0.0</version>
+    <version>1.2.0</version>
     <name>DiaryKeeper</name>
     <description>One-of-a-kind, owner-editable collectible diaries</description>
 
@@ -20,6 +20,10 @@
             <id>papermc-repo</id>
             <url>https://repo.papermc.io/repository/maven-public/</url>
         </repository>
+        <repository>
+            <id>jitpack</id>
+            <url>https://jitpack.io</url>
+        </repository>
     </repositories>
 
     <dependencies>
@@ -27,6 +31,12 @@
             <groupId>io.papermc.paper</groupId>
             <artifactId>paper-api</artifactId>
             <version>1.21.1-R0.1-SNAPSHOT</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.github.plan-player-analytics</groupId>
+            <artifactId>Plan</artifactId>
+            <version>5.7.3306</version>
             <scope>provided</scope>
         </dependency>
     </dependencies>

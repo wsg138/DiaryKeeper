@@ -1,5 +1,7 @@
 package com.p2wn.diary.logic;
 
+import com.p2wn.diary.data.DiaryAnalyticsEventType;
+import com.p2wn.diary.data.DiaryAnalyticsStore;
 import com.p2wn.diary.data.DeliveryReason;
 import com.p2wn.diary.data.DiaryStore;
 import com.p2wn.diary.data.PendingDelivery;
@@ -21,6 +23,7 @@ public final class DeliveryService {
     private BukkitTask task;
     private DiaryService diaryService;
     private DiaryTrackerService trackerService;
+    private DiaryAnalyticsStore analyticsStore;
 
     public DeliveryService(Plugin plugin, DiaryStore diaryStore) {
         this.plugin = plugin;
@@ -35,9 +38,18 @@ public final class DeliveryService {
         this.trackerService = trackerService;
     }
 
+    public void setAnalyticsStore(DiaryAnalyticsStore analyticsStore) {
+        this.analyticsStore = analyticsStore;
+    }
+
     public void queue(UUID playerId, DeliveryReason reason, ItemStack item) {
         diaryStore.queueDelivery(playerId, reason, item);
         diaryStore.flushNow();
+        if (analyticsStore != null) {
+            OfflinePlayer offlinePlayer = Bukkit.getOfflinePlayer(playerId);
+            String playerName = offlinePlayer.getName() != null ? offlinePlayer.getName() : playerId.toString();
+            analyticsStore.record(DiaryAnalyticsEventType.QUEUED_DELIVERY, playerId, playerName, extractDiaryId(item), reason.name());
+        }
         if (trackerService != null) {
             OfflinePlayer offlinePlayer = Bukkit.getOfflinePlayer(playerId);
             String playerName = offlinePlayer.getName() != null ? offlinePlayer.getName() : playerId.toString();
@@ -116,6 +128,15 @@ public final class DeliveryService {
                 if (delivery.reason() == DeliveryReason.VOID_RETURN) {
                     diaryService.onVoidReturnDelivered(player, delivery.item());
                 }
+                if (analyticsStore != null) {
+                    analyticsStore.record(
+                            DiaryAnalyticsEventType.DELIVERED_FROM_QUEUE,
+                            player.getUniqueId(),
+                            player.getName(),
+                            extractDiaryId(item),
+                            delivery.reason().name()
+                    );
+                }
             }
 
             if (deliveredCount > 0) {
@@ -132,5 +153,12 @@ public final class DeliveryService {
         if (diaryStore.getPlayersWithPendingDeliveries().isEmpty()) {
             stop();
         }
+    }
+
+    private String extractDiaryId(ItemStack item) {
+        if (diaryService == null) {
+            return null;
+        }
+        return diaryService.getDiaryId(item);
     }
 }
