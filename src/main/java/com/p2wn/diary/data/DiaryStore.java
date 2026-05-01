@@ -36,6 +36,7 @@ public final class DiaryStore {
 
     private static final class DiaryRecordState {
         private UUID ownerUuid;
+        private String ownerName;
         private ItemStack snapshot;
         private DiaryLocationRecord location;
     }
@@ -227,12 +228,15 @@ public final class DiaryStore {
         markDirty();
     }
 
-    public void updateTrackedDiary(String diaryId, UUID ownerUuid, ItemStack snapshot, DiaryLocationRecord location) {
+    public void updateTrackedDiary(String diaryId, UUID ownerUuid, String ownerName, ItemStack snapshot, DiaryLocationRecord location) {
         if (diaryId == null || snapshot == null) {
             return;
         }
         DiaryRecordState state = diaryRecords.computeIfAbsent(diaryId, ignored -> new DiaryRecordState());
         state.ownerUuid = ownerUuid;
+        if (ownerName != null && !ownerName.isBlank()) {
+            state.ownerName = ownerName;
+        }
         state.snapshot = snapshot.clone();
         state.location = location;
         markDirty();
@@ -243,7 +247,7 @@ public final class DiaryStore {
         if (state == null) {
             return null;
         }
-        return new TrackedDiaryRecord(diaryId, state.ownerUuid, state.snapshot == null ? null : state.snapshot.clone(), state.location);
+        return new TrackedDiaryRecord(diaryId, state.ownerUuid, state.ownerName, state.snapshot == null ? null : state.snapshot.clone(), state.location);
     }
 
     public String findDiaryIdByOwner(UUID ownerUuid) {
@@ -350,6 +354,7 @@ public final class DiaryStore {
             DiaryRecordState state = entry.getValue();
             String basePath = "trackedDiaries." + diaryId;
             data.set(basePath + ".ownerUuid", state.ownerUuid == null ? null : state.ownerUuid.toString());
+            data.set(basePath + ".ownerName", state.ownerName);
             data.set(basePath + ".snapshot", state.snapshot);
             if (state.location != null) {
                 ConfigurationSection locationSection = data.createSection(basePath + ".location");
@@ -452,6 +457,7 @@ public final class DiaryStore {
             }
             DiaryRecordState state = new DiaryRecordState();
             state.ownerUuid = parseUuid(section.getString("ownerUuid"));
+            state.ownerName = section.getString("ownerName");
             state.snapshot = section.getItemStack("snapshot");
             ConfigurationSection locationSection = section.getConfigurationSection("location");
             if (locationSection != null) {

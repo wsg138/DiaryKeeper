@@ -4,6 +4,7 @@ import com.p2wn.diary.data.DiaryLocationRecord;
 import com.p2wn.diary.data.DiaryLocationType;
 import com.p2wn.diary.data.DiaryStore;
 import com.p2wn.diary.item.DiaryItem;
+import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.OfflinePlayer;
@@ -147,7 +148,8 @@ public final class DiaryTrackerService {
         }
         var existing = diaryStore.getTrackedDiary(diaryId);
         if (existing != null && existing.lastKnownLocation() != null) {
-            diaryStore.updateTrackedDiary(diaryId, diaryItem.getOwner(item), item.clone(), existing.lastKnownLocation());
+            UUID ownerId = diaryItem.getOwner(item);
+            diaryStore.updateTrackedDiary(diaryId, ownerId, resolveOwnerName(ownerId), item.clone(), existing.lastKnownLocation());
         }
     }
 
@@ -166,7 +168,7 @@ public final class DiaryTrackerService {
             String diaryId = diaryItem.getDiaryId(stack);
             UUID ownerId = diaryItem.getOwner(stack);
             if (diaryId != null) {
-                diaryStore.updateTrackedDiary(diaryId, ownerId, stack.clone(), currentLocation);
+                diaryStore.updateTrackedDiary(diaryId, ownerId, resolveOwnerName(ownerId), stack.clone(), currentLocation);
             }
             return;
         }
@@ -263,5 +265,13 @@ public final class DiaryTrackerService {
 
     private String prettifyMaterial(Material material) {
         return material.name().toLowerCase(Locale.ROOT).replace('_', ' ');
+    }
+
+    private String resolveOwnerName(UUID ownerId) {
+        if (ownerId == null) {
+            return null;
+        }
+        OfflinePlayer owner = Bukkit.getOfflinePlayer(ownerId);
+        return owner.getName();
     }
 }

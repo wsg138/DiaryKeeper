@@ -276,21 +276,19 @@ public final class DiaryPlanDataExtension implements DataExtension {
     }
 
     @TableProvider(tableColor = Color.BLUE)
-    public Table recentTrackedLocations() {
+    public Table recentTrackedDiaries() {
         Table.Factory table = Table.builder()
                 .columnOne("Updated", icon("clock"))
                 .columnOneFormat(TableColumnFormat.DATE_SECOND)
                 .columnTwo("Owner", icon("user"))
                 .columnThree("Diary", icon("fingerprint"))
-                .columnFour("Type", icon("tag"))
-                .columnFive("Location", icon("map-marker-alt"));
+                .columnFour("Last seen", icon("map-marker-alt"));
         for (TrackedDiaryRecord record : diaryStore.getRecentTrackedDiaries(recentTableSize)) {
             DiaryLocationRecord location = record.lastKnownLocation();
             table.addRow(
                     toMillis(location == null ? 0L : location.updatedAtEpochSeconds()),
-                    shortId(record.ownerUuid() == null ? null : record.ownerUuid().toString()),
+                    ownerName(record),
                     shortId(record.diaryId()),
-                    location == null ? "unknown" : location.type().name(),
                     location == null ? "unknown" : trim(location.description())
             );
         }
@@ -329,6 +327,13 @@ public final class DiaryPlanDataExtension implements DataExtension {
 
     private String value(String input) {
         return input == null || input.isBlank() ? "none" : trim(input);
+    }
+
+    private String ownerName(TrackedDiaryRecord record) {
+        if (record.ownerName() != null && !record.ownerName().isBlank()) {
+            return trim(record.ownerName());
+        }
+        return shortId(record.ownerUuid() == null ? null : record.ownerUuid().toString());
     }
 
     private String trim(String input) {

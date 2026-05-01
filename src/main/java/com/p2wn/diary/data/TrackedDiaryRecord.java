@@ -7,6 +7,7 @@ import java.util.UUID;
 public record TrackedDiaryRecord(
         String diaryId,
         UUID ownerUuid,
+        String ownerName,
         ItemStack snapshot,
         DiaryLocationRecord lastKnownLocation
 ) {
@@ -15,6 +16,7 @@ public record TrackedDiaryRecord(
         return new TrackedDiaryRecord(
                 diaryId,
                 ownerUuid,
+                ownerName,
                 snapshot == null ? null : snapshot.clone(),
                 lastKnownLocation
         );
