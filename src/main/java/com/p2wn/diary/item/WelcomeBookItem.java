@@ -55,9 +55,11 @@ public final class WelcomeBookItem {
     }
 
     public ItemStack createWelcomeBook() {
-        ItemStack stack = template.item().clone();
-        stack.setType(Material.WRITTEN_BOOK);
+        ItemStack stack = new ItemStack(Material.WRITTEN_BOOK);
         if (stack.getItemMeta() instanceof BookMeta meta) {
+            if (template.item().getItemMeta() instanceof BookMeta sourceMeta) {
+                meta.setPages(sourceMeta.getPages());
+            }
             meta.setTitle(color("&6Enthusia SMP Guide"));
             meta.setAuthor(color("&bEnthusia SMP"));
             meta.setDisplayName(color("&6&lEnthusia SMP Guide"));
