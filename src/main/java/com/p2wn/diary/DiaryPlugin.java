@@ -69,7 +69,7 @@ public final class DiaryPlugin extends JavaPlugin {
 
         handleWorldReset();
 
-        diaryItem = new DiaryItem(configManager, diaryStore, diaryKeys);
+        diaryItem = new DiaryItem(this, configManager, diaryStore, diaryKeys);
         welcomeBookItem = new WelcomeBookItem();
         diaryTrackerService = new DiaryTrackerService(diaryStore, diaryItem);
         duplicateWatcher = new DuplicateWatcher(this, configManager, diaryItem);

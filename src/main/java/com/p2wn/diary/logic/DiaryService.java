@@ -118,6 +118,7 @@ public final class DiaryService {
             Bukkit.getPluginManager().callEvent(new DiaryReceivedEvent(player, diary.clone()));
             deliverOrQueue(player, DeliveryReason.INITIAL_ISSUE, diary);
             deliverOrDrop(player, welcomeBookItem.createWelcomeBook());
+            plugin.getLogger().info("Issued first-join diary and welcome guide to " + player.getName() + ".");
             diaryStore.markIssued(player.getUniqueId());
             diaryStore.flushNow();
         }
@@ -303,8 +304,12 @@ public final class DiaryService {
 
     private void deliverOrDrop(Player player, ItemStack item) {
         Map<Integer, ItemStack> leftovers = player.getInventory().addItem(item.clone());
+        if (leftovers.isEmpty()) {
+            plugin.getLogger().info("Delivered welcome guide to " + player.getName() + "'s inventory.");
+        }
         for (ItemStack leftover : leftovers.values()) {
             player.getWorld().dropItemNaturally(player.getLocation(), leftover);
+            plugin.getLogger().info("Dropped welcome guide at " + player.getName() + "'s location because their inventory was full.");
         }
         if (duplicateWatcher != null) {
             duplicateWatcher.refreshPlayerSnapshot(player);

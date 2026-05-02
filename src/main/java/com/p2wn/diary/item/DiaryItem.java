@@ -13,7 +13,9 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.BookMeta;
 import org.bukkit.persistence.PersistentDataContainer;
 import org.bukkit.persistence.PersistentDataType;
+import org.bukkit.plugin.Plugin;
 
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
@@ -22,11 +24,14 @@ import java.util.UUID;
 
 public final class DiaryItem {
 
+    private final Plugin plugin;
     private final ConfigManager configManager;
     private final DiaryStore diaryStore;
     private final DiaryKeys keys;
+    private boolean warnedNexoFallback;
 
-    public DiaryItem(ConfigManager configManager, DiaryStore diaryStore, DiaryKeys keys) {
+    public DiaryItem(Plugin plugin, ConfigManager configManager, DiaryStore diaryStore, DiaryKeys keys) {
+        this.plugin = plugin;
         this.configManager = configManager;
         this.diaryStore = diaryStore;
         this.keys = keys;
@@ -196,7 +201,11 @@ public final class DiaryItem {
         }
 
         ItemStack nexoStack = createNexoItem(nexoItemId);
-        if (nexoStack == null || !(nexoStack.getItemMeta() instanceof BookMeta)) {
+        if (nexoStack == null) {
+            return null;
+        }
+        if (!(nexoStack.getItemMeta() instanceof BookMeta)) {
+            warnNexoFallback("Nexo item '" + nexoItemId + "' is not backed by BookMeta. Set its material to WRITABLE_BOOK.");
             return null;
         }
         nexoStack.setAmount(1);
@@ -204,11 +213,17 @@ public final class DiaryItem {
     }
 
     private ItemStack createNexoItem(String itemId) {
+        Plugin nexo = Bukkit.getPluginManager().getPlugin("Nexo");
+        if (nexo == null) {
+            return null;
+        }
+
         try {
-            Class<?> nexoItemsClass = Class.forName("com.nexomc.nexo.api.NexoItems");
+            Class<?> nexoItemsClass = Class.forName("com.nexomc.nexo.api.NexoItems", true, nexo.getClass().getClassLoader());
             Method optionalItemFromId = nexoItemsClass.getMethod("optionalItemFromId", String.class);
             Object optionalBuilder = optionalItemFromId.invoke(null, itemId);
             if (!(optionalBuilder instanceof Optional<?> optional) || optional.isEmpty()) {
+                warnNexoFallback("Nexo item '" + itemId + "' was not found. Check appearance.nexo-item-id.");
                 return null;
             }
 
@@ -216,8 +231,21 @@ public final class DiaryItem {
             Method build = itemBuilder.getClass().getMethod("build");
             Object built = build.invoke(itemBuilder);
             return built instanceof ItemStack stack ? stack : null;
+        } catch (InvocationTargetException ex) {
+            Throwable cause = ex.getCause() == null ? ex : ex.getCause();
+            warnNexoFallback("Nexo item '" + itemId + "' failed to build: " + cause.getMessage());
+            return null;
         } catch (ReflectiveOperationException | RuntimeException ex) {
+            warnNexoFallback("Nexo API lookup failed for '" + itemId + "': " + ex.getMessage());
             return null;
         }
+    }
+
+    private void warnNexoFallback(String message) {
+        if (warnedNexoFallback) {
+            return;
+        }
+        warnedNexoFallback = true;
+        plugin.getLogger().warning(message + " Falling back to a vanilla writable book.");
     }
 }
