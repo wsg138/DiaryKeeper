@@ -204,7 +204,7 @@ public final class DuplicateWatcher {
             return;
         }
 
-        Map<String, List<Occurrence>> global = buildGlobalOccurrenceMap(triggerOccurrences);
+        Map<String, List<Occurrence>> global = buildGlobalOccurrenceMap();
         Map<String, Occurrence> firstByDiaryId = new LinkedHashMap<>();
         for (Occurrence occurrence : triggerOccurrences) {
             firstByDiaryId.putIfAbsent(occurrence.diaryId(), occurrence);
@@ -230,13 +230,12 @@ public final class DuplicateWatcher {
         }
     }
 
-    private Map<String, List<Occurrence>> buildGlobalOccurrenceMap(List<Occurrence> triggerOccurrences) {
+    private Map<String, List<Occurrence>> buildGlobalOccurrenceMap() {
         Map<String, List<Occurrence>> grouped = new LinkedHashMap<>();
         for (List<Occurrence> occurrences : playerSnapshots.values()) {
             addOccurrences(grouped, occurrences);
         }
         addOccurrences(grouped, groundItemSnapshots.values());
-        addOccurrences(grouped, triggerOccurrences);
         return grouped;
     }
 
