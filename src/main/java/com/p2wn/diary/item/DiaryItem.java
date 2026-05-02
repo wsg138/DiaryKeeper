@@ -152,11 +152,10 @@ public final class DiaryItem {
 
         if (configManager.cfg().getBoolean("appearance.enchanted-glint", true)) {
             meta.addEnchant(Enchantment.UNBREAKING, 1, true);
-            meta.addItemFlags(ItemFlag.HIDE_ENCHANTS);
         } else {
             meta.removeEnchant(Enchantment.UNBREAKING);
-            meta.removeItemFlags(ItemFlag.HIDE_ENCHANTS);
         }
+        meta.addItemFlags(ItemFlag.HIDE_ENCHANTS);
 
         PersistentDataContainer pdc = meta.getPersistentDataContainer();
         pdc.set(keys.isDiary(), PersistentDataType.BOOLEAN, true);

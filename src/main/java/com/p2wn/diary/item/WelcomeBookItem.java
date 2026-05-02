@@ -3,6 +3,7 @@ package com.p2wn.diary.item;
 import org.bukkit.ChatColor;
 import org.bukkit.Material;
 import org.bukkit.enchantments.Enchantment;
+import org.bukkit.inventory.ItemFlag;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.BookMeta;
 
@@ -22,22 +23,32 @@ public final class WelcomeBookItem {
             ));
             meta.setPages(
                     page(
-                            "&6&lWelcome to",
-                            "&6&lEnthusia SMP!",
+                            "&b&lWelcome to",
+                            "&b&lEnthusia SMP!",
                             "",
-                            "&7This server is a mostly vanilla survival world focused on freedom, long-term exploration, and player interaction.",
+                            "&7Mostly vanilla",
+                            "&7survival focused on",
+                            "&7freedom, exploration,",
+                            "&7and player",
+                            "&7interaction.",
                             "",
-                            "&aBuild, fight, trade, and create your own story!"
+                            "&aBuild, fight, trade,",
+                            "&aand create your own",
+                            "&astory."
                     ),
                     page(
                             "&2&lSURVIVAL",
                             "",
-                            "&7This is a survival server.",
+                            "&7This is a survival",
+                            "&7server.",
                             "",
-                            "&fGather resources, build a base, and progress normally.",
+                            "&fGather resources,",
+                            "&fbuild a base, and",
+                            "&fprogress normally.",
                             "",
                             "&cThere are no shortcuts.",
-                            "&7Everything you gain comes from playing."
+                            "&7Everything you gain",
+                            "&7comes from playing."
                     ),
                     page(
                             "&3&lWORLD",
@@ -47,77 +58,120 @@ public final class WelcomeBookItem {
                             "&f12.5k &7Nether",
                             "&f100k &7block End",
                             "",
-                            "&7You are encouraged to explore and move away from spawn."
+                            "&7Explore and move",
+                            "&7away from spawn."
                     ),
                     page(
                             "&3&lWORLD",
                             "",
-                            "&7Farther distance means more safety and fewer players nearby.",
+                            "&7Farther distance",
+                            "&7means more safety",
+                            "&7and fewer players",
+                            "&7nearby.",
                             "",
-                            "&eOr just build straight around spawn - we won't stop you!"
+                            "&fOr build around spawn.",
+                            "&7We won't stop you."
                     ),
                     page(
                             "&c&lPVP",
                             "",
-                            "&7PvP is enabled, although some areas or mechanics like spawn may be balanced or restricted.",
+                            "&7PvP is enabled.",
+                            "&7Some areas or",
+                            "&7mechanics, like",
+                            "&7spawn, may be",
+                            "&7balanced or",
+                            "&7restricted.",
                             "",
-                            "&cAlways be prepared and protect your valuables!"
+                            "&cBe prepared.",
+                            "&cProtect valuables."
                     ),
                     page(
-                            "&6&lECONOMY",
+                            "&a&lECONOMY",
                             "",
-                            "&7The economy is fully player-driven.",
+                            "&7The economy is",
+                            "&7fully player-driven.",
                             "",
-                            "&fRent shops &7in the market with &6Raw Gold&7 and use them to trade items safely for what you need."
+                            "&fRent market shops",
+                            "&fwith Raw Gold.",
+                            "",
+                            "&7Use shops to trade",
+                            "&7items safely."
                     ),
                     page(
                             "&b&lHOMES",
                             "",
-                            "&f/homes &7- view saved locations",
-                            "&f/sethome [name]",
-                            "&7Set up to two homes to quickly return to important places like your base.",
+                            "&f/homes",
+                            "&7View saved locations.",
                             "",
-                            "&cBases are not protected from griefing or theft!"
+                            "&f/sethome [name]",
+                            "&7Set up to two homes.",
+                            "",
+                            "&cBases are not",
+                            "&cprotected from",
+                            "&cgriefing or theft."
                     ),
                     page(
                             "&d&lTELEPORT",
                             "",
-                            "&f/tpa &7- request teleportation to another player",
-                            "&f/tpaccept &7- accept incoming requests",
+                            "&f/tpa",
+                            "&7Request teleporting",
+                            "&7to another player.",
                             "",
-                            "&cAlways be careful when accepting requests!"
+                            "&f/tpaccept",
+                            "&7Accept requests.",
+                            "",
+                            "&cBe careful when",
+                            "&caccepting requests."
                     ),
                     page(
                             "&5&lREPUTATION",
                             "",
-                            "&7Your reputation matters!",
+                            "&7Your reputation",
+                            "&7matters.",
                             "",
-                            "&f/rep &7lets you uprep or downrep players depending on their behavior toward you and others."
+                            "&f/rep",
+                            "&7Uprep or downrep",
+                            "&7players based on",
+                            "&7their behavior."
                     ),
                     page(
                             "&5&lREPUTATION",
                             "",
-                            "&7You can only give reputation to each player once, and it is displayed publicly.",
+                            "&7You can rate each",
+                            "&7player once.",
                             "",
-                            "&aGood reputation &7may build trust.",
-                            "&cNegative reputation &7may lead to future consequences..."
+                            "&7Reputation is shown",
+                            "&7publicly.",
+                            "",
+                            "&aGood rep builds trust.",
+                            "&cBad rep may have",
+                            "&cfuture consequences."
                     ),
                     page(
                             "&9&lGUILDS",
                             "",
-                            "&7Guilds are groups of players.",
+                            "&7Guilds are groups",
+                            "&7of players.",
                             "",
-                            "&fCreate or join a guild &7to share bases, resources, and allies."
+                            "&fCreate or join one",
+                            "&fto share bases,",
+                            "&fresources, and allies."
                     ),
                     page(
                             "&9&lGUILDS",
                             "",
-                            "&7As a guild, you will have access to &f/guildhome&7 plus a shared bank and guild stall in the future.",
+                            "&7Guilds have access",
+                            "&7to &f/guildhome&7.",
                             "",
-                            "&f/guild &7- help with further commands"
+                            "&7Shared banks and",
+                            "&7guild stalls may",
+                            "&7come later.",
+                            "",
+                            "&f/guild",
+                            "&7Command help."
                     ),
                     page(
-                            "&e&lCOMMANDS",
+                            "&f&lCOMMANDS",
                             "",
                             "&f/report",
                             "&7Report rule violations",
@@ -128,20 +182,31 @@ public final class WelcomeBookItem {
                     page(
                             "&b&lDISCORD",
                             "",
-                            "&7Join our Discord for news, updates, community and more!",
+                            "&7Join our Discord",
+                            "&7for news, updates,",
+                            "&7community, and more.",
                             "",
-                            "&7The link is available through:",
+                            "&7Link available at:",
                             "&fwww.enthusia.info"
                     ),
                     page(
-                            "&6&lFINAL NOTES",
+                            "&a&lFINAL NOTES",
                             "",
-                            "&7Explore the world, build incredible things, meet allies and enemies - your story on this server is yours alone.",
+                            "&7Explore the world.",
+                            "&7Build incredible",
+                            "&7things.",
+                            "",
+                            "&7Meet allies and",
+                            "&7enemies.",
+                            "",
+                            "&7Your story is yours",
+                            "&7alone.",
                             "",
                             "&aHave fun!"
                     )
             );
             meta.addEnchant(Enchantment.VANISHING_CURSE, 1, true);
+            meta.addItemFlags(ItemFlag.HIDE_ENCHANTS);
             stack.setItemMeta(meta);
         }
         return stack;
