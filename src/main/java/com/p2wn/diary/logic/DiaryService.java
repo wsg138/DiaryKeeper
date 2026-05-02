@@ -11,6 +11,7 @@ import com.p2wn.diary.events.DiaryReceivedEvent;
 import com.p2wn.diary.events.DiarySignedEvent;
 import com.p2wn.diary.events.DiaryVoidReturnEvent;
 import com.p2wn.diary.item.DiaryItem;
+import com.p2wn.diary.item.WelcomeBookItem;
 import com.p2wn.diary.util.DiaryTextValidator;
 import org.bukkit.Bukkit;
 import org.bukkit.OfflinePlayer;
@@ -40,6 +41,7 @@ public final class DiaryService {
     private final ConfigManager configManager;
     private final DiaryStore diaryStore;
     private final DiaryItem diaryItem;
+    private final WelcomeBookItem welcomeBookItem;
     private final DeliveryService deliveryService;
     private final Plugin plugin;
     private DiaryTrackerService trackerService;
@@ -47,11 +49,12 @@ public final class DiaryService {
     private DuplicateWatcher duplicateWatcher;
     private DiaryAnalyticsStore analyticsStore;
 
-    public DiaryService(Plugin plugin, ConfigManager configManager, DiaryStore diaryStore, DiaryItem diaryItem, DeliveryService deliveryService) {
+    public DiaryService(Plugin plugin, ConfigManager configManager, DiaryStore diaryStore, DiaryItem diaryItem, WelcomeBookItem welcomeBookItem, DeliveryService deliveryService) {
         this.plugin = plugin;
         this.configManager = configManager;
         this.diaryStore = diaryStore;
         this.diaryItem = diaryItem;
+        this.welcomeBookItem = welcomeBookItem;
         this.deliveryService = deliveryService;
     }
 
@@ -114,6 +117,7 @@ public final class DiaryService {
             ItemStack diary = diaryItem.createDiary(player.getUniqueId(), player.getName());
             Bukkit.getPluginManager().callEvent(new DiaryReceivedEvent(player, diary.clone()));
             deliverOrQueue(player, DeliveryReason.INITIAL_ISSUE, diary);
+            deliverOrQueue(player, DeliveryReason.INITIAL_ISSUE, welcomeBookItem.createWelcomeBook());
             diaryStore.markIssued(player.getUniqueId());
             diaryStore.flushNow();
         }

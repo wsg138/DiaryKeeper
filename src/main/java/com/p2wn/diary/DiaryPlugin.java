@@ -6,6 +6,7 @@ import com.p2wn.diary.data.DiaryAnalyticsStore;
 import com.p2wn.diary.data.DiaryStore;
 import com.p2wn.diary.integrations.plan.DiaryPlanHook;
 import com.p2wn.diary.item.DiaryItem;
+import com.p2wn.diary.item.WelcomeBookItem;
 import com.p2wn.diary.listeners.AnvilGuardListener;
 import com.p2wn.diary.listeners.BundleGuardListener;
 import com.p2wn.diary.listeners.ContainerGuardListener;
@@ -42,6 +43,7 @@ public final class DiaryPlugin extends JavaPlugin {
     private DiaryAnalyticsStore diaryAnalyticsStore;
     private DiaryKeys diaryKeys;
     private DiaryItem diaryItem;
+    private WelcomeBookItem welcomeBookItem;
     private RestrictionService restrictionService;
     private DuplicateWatcher duplicateWatcher;
     private DeliveryService deliveryService;
@@ -68,10 +70,11 @@ public final class DiaryPlugin extends JavaPlugin {
         handleWorldReset();
 
         diaryItem = new DiaryItem(configManager, diaryStore, diaryKeys);
+        welcomeBookItem = new WelcomeBookItem();
         diaryTrackerService = new DiaryTrackerService(diaryStore, diaryItem);
         duplicateWatcher = new DuplicateWatcher(this, configManager, diaryItem);
         deliveryService = new DeliveryService(this, diaryStore);
-        diaryService = new DiaryService(this, configManager, diaryStore, diaryItem, deliveryService);
+        diaryService = new DiaryService(this, configManager, diaryStore, diaryItem, welcomeBookItem, deliveryService);
         restrictionService = new RestrictionService(configManager, diaryItem);
         voidWatcher = new VoidWatcher(this, configManager, diaryItem, deliveryService, duplicateWatcher);
         diaryRestoreService = new DiaryRestoreService(configManager, diaryStore, diaryItem, diaryService, deliveryService, diaryTrackerService);
