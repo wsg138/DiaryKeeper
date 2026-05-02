@@ -11,7 +11,6 @@ import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabCompleter;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
-import org.bukkit.inventory.meta.BookMeta;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -200,11 +199,11 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
             return true;
         }
         ItemStack stack = player.getInventory().getItemInMainHand();
-        if (stack == null || !(stack.getItemMeta() instanceof BookMeta meta)) {
-            sender.sendMessage("Hold a written book with the pages you want to import.");
+        if (stack == null || stack.getItemMeta() == null) {
+            sender.sendMessage("Hold the book you want to import.");
             return true;
         }
-        if (plugin.welcomeBookItem().importTemplate(meta)) {
+        if (plugin.welcomeBookItem().importTemplate(stack)) {
             sender.sendMessage("Imported welcome book template from your held book.");
             return true;
         }
