@@ -10,11 +10,14 @@ import org.bukkit.plugin.Plugin;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 
 public final class WelcomeBookItem {
 
     private static final String TEMPLATE_FILE_NAME = "welcome-book.yml";
+    private static final int MAX_VISIBLE_LINE_LENGTH = 19;
+    private static final int MAX_LINES_PER_PAGE = 13;
     private final Plugin plugin;
     private final File templateFile;
     private WelcomeBookTemplate template;
@@ -35,7 +38,7 @@ public final class WelcomeBookItem {
         }
 
         YamlConfiguration data = new YamlConfiguration();
-        data.set("pages", source.getPages());
+        data.set("pages", normalizeTemplatePages(source.getPages()));
 
         try {
             data.save(templateFile);
@@ -57,7 +60,7 @@ public final class WelcomeBookItem {
                     color("&7A first-join survival guide."),
                     color("&8Keep it safe.")
             ));
-            meta.setPages(template.pages());
+            meta.setPages(renderTemplatePages(template.pages()));
             meta.setEnchantmentGlintOverride(Boolean.TRUE);
             meta.addItemFlags(ItemFlag.HIDE_ENCHANTS);
             stack.setItemMeta(meta);
@@ -80,6 +83,106 @@ public final class WelcomeBookItem {
 
     private String color(String text) {
         return ChatColor.translateAlternateColorCodes('&', text);
+    }
+
+    private List<String> normalizeTemplatePages(List<String> pages) {
+        List<String> normalizedPages = new ArrayList<>();
+        for (String page : pages) {
+            normalizedPages.addAll(normalizePage(page));
+        }
+        return List.copyOf(normalizedPages);
+    }
+
+    private List<String> renderTemplatePages(List<String> pages) {
+        return normalizeTemplatePages(pages);
+    }
+
+    private List<String> wrapPage(String page) {
+        String colored = color(page == null ? "" : page);
+        List<String> normalizedLines = new ArrayList<>();
+        for (String rawLine : colored.split("\\R")) {
+            String line = rawLine.trim();
+            if (line.isEmpty()) {
+                if (!normalizedLines.isEmpty() && !normalizedLines.get(normalizedLines.size() - 1).isEmpty()) {
+                    normalizedLines.add("");
+                }
+                continue;
+            }
+            normalizedLines.addAll(wrapLine(line));
+        }
+
+        while (!normalizedLines.isEmpty() && normalizedLines.get(0).isEmpty()) {
+            normalizedLines.remove(0);
+        }
+        while (!normalizedLines.isEmpty() && normalizedLines.get(normalizedLines.size() - 1).isEmpty()) {
+            normalizedLines.remove(normalizedLines.size() - 1);
+        }
+        return normalizedLines;
+    }
+
+    private List<String> normalizePage(String page) {
+        List<String> wrappedLines = wrapPage(page);
+        List<String> normalizedPages = new ArrayList<>();
+        List<String> currentPageLines = new ArrayList<>();
+
+        for (String line : wrappedLines) {
+            if (currentPageLines.size() >= MAX_LINES_PER_PAGE) {
+                normalizedPages.add(String.join("\n", currentPageLines));
+                currentPageLines.clear();
+            }
+            currentPageLines.add(line);
+        }
+
+        if (!currentPageLines.isEmpty()) {
+            normalizedPages.add(String.join("\n", currentPageLines));
+        }
+
+        return normalizedPages;
+    }
+
+    private List<String> wrapLine(String line) {
+        String stripped = ChatColor.stripColor(line);
+        if (stripped == null || stripped.isBlank()) {
+            return List.of("");
+        }
+
+        List<String> wrapped = new ArrayList<>();
+        String[] words = stripped.trim().split("\\s+");
+        String prefix = colorPrefix(line);
+        StringBuilder current = new StringBuilder();
+        for (String word : words) {
+            String candidate = current.isEmpty() ? word : current + " " + word;
+            if (visibleLength(candidate) > MAX_VISIBLE_LINE_LENGTH && !current.isEmpty()) {
+                wrapped.add(prefix + current);
+                current.setLength(0);
+                current.append(word);
+            } else {
+                if (!current.isEmpty()) {
+                    current.append(' ');
+                }
+                current.append(word);
+            }
+        }
+        if (!current.isEmpty()) {
+            wrapped.add(prefix + current);
+        }
+        return wrapped;
+    }
+
+    private String colorPrefix(String line) {
+        StringBuilder prefix = new StringBuilder();
+        for (int i = 0; i < line.length() - 1; i++) {
+            if (line.charAt(i) == '§') {
+                prefix.append(line, i, i + 2);
+                i++;
+            }
+        }
+        return prefix.toString();
+    }
+
+    private int visibleLength(String line) {
+        String stripped = ChatColor.stripColor(line);
+        return stripped == null ? 0 : stripped.length();
     }
 
     private WelcomeBookTemplate defaultTemplate() {
