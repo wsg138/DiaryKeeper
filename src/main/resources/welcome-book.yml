@@ -1,0 +1,41 @@
+book:
+  ==: org.bukkit.inventory.ItemStack
+  DataVersion: 4671
+  id: minecraft:writable_book
+  count: 1
+  components:
+    minecraft:writable_book_content: '{pages:[{raw:"Â§6Â§lWelcome to\nÂ§lEnthusia SMP!Â§r\n\nEnthusia
+      is a semi-anarchy survival server built around freedom, PvP, trading,\nexploration,
+      and player interaction.\n\nÂ§aMake your own story.Â§r"},{raw:"Â§2Â§lSURVIVALÂ§r\n\nGather
+      resources,\nbuild a base, explore,\nand progress normally.\n\nThere are no shortcuts.
+      Most of what you earn\ncomes from playing."},{raw:"Â§3Â§lTHE WORLDÂ§r\n\nThe world
+      is large\nand permanent.\n100k x 100k\n\nTravel far from spawn\nfor more safety,
+      or\nstay close if you want\nmore chaos.\n\nÂ§6Farther Â§lusually\nmeans safer.Â§r"},{raw:"Â§cÂ§lBASESÂ§r\n\nThere
+      are Â§cÂ§lno land\nclaimsÂ§r.\n\nYour base can be\nraided, griefed, or\nstolen
+      from.\n\nÂ§6Â§lHide it well.Â§r"},{raw:"Â§cÂ§lPVPÂ§r\n\nSpawn and Market are\nsafe,
+      but outside those\nareas you should always\nbe ready.\n\nÂ§cÂ§lDo not carry what\nyou
+      cannot lose.Â§r"},{raw:"Â§4Â§lWARZONEÂ§r\n\nThe Warzone is near\nspawn and has different\nareas
+      for different\nPvP styles.\n\nSome areas may allow\nwebs, traps, carts, or\nother
+      mechanics.\n\nÂ§cÂ§lIt is dangerous.Â§r"},{raw:"Â§Â§Â§6Â§lECONOMYÂ§r\n\nThe economy
+      uses\nÂ§6Â§lÂ§lRaw GoldÂ§r.\n\nYou can trade, deposit, withdraw, and pay other players.\n\nRaw
+      Gold is also used to rent market stalls, start events, and more."},{raw:"Â§6Â§lMARKETÂ§r\n\nMarket
+      is a safe zone.\n\nPlayers can rent stalls and create item-for-item\nshops.\n\nÂ§aTrade
+      resources\ndirectly with other\nplayers.Â§r"},{raw:"Â§3Â§lHOMESÂ§r\n\nUse Â§3/sethome
+      [name]Â§r\nto save a location.\n\nUse Â§3/homesÂ§r\nto view your saved homes.\n\nHomes
+      help you travel,\nbut they Â§cÂ§ldo not\nprotectÂ§r the area."},{raw:"Â§3Â§lTELEPORTSÂ§r\n\nUse
+      Â§3/tpa [player]Â§r\nto request a teleport.\n\nUse Â§3/tpacceptÂ§r\nto accept one.\n\nÂ§cÂ§lBe
+      carefulÂ§r\nwho you trust.\n\nTrapping is allowed"},{raw:"Â§5Â§lREPUTATIONÂ§r\n\nUse
+      Â§3/rep [player]Â§r to apply a positive or negative reputation to a player.\n\nYou
+      can only rep each player once. But you can change your rep every 24 hours.\n\nÂ§aGood
+      rep builds trust.Â§r\nÂ§cBad rep warns others.Â§r"},{raw:"Â§2Â§lGUILDSÂ§r\n\nGuilds
+      are groups of\nplayers. Like a team.\n\nJoin or create one to\nteam up, make
+      allies,\nand compete in guild\nevents.\n\nUse Â§3/guildÂ§  help\nfor guild commands."},{raw:"Â§5Â§lEVENTSÂ§r\nEvents
+      happen often and are separate from normal survival.\n\nYou may see PvP games,
+      races, parkour, KOTH,\ntrivia, and more.\n\nÂ§6Join for rewards\nand competition.Â§r"},{raw:"Â§3Â§lCOMMANDSÂ§r\nÂ§3/helpÂ§r\nView
+      commands.\nÂ§3/reportÂ§r\nReport issues.\nÂ§3/rulesÂ§r\nView server rules.\nÂ§3/discordÂ§r\nJoin
+      the community.\nÂ§3/wikiÂ§r\nLearn more."},{raw:"Â§9Â§lWEBSITEÂ§r\n\nJoin the Discord
+      for\nnews, events, support,\nand community.\n\nÂ§3Â§lwww.enthusia.infoÂ§r\n\nThe
+      website has manu useful tools such as the rules."},{raw:"Â§6Â§lFINAL NOTESÂ§r\n\nBuild,
+      trade, fight,\nexplore, make allies,\nmake enemies, or\ndisappear into the\nwilderness.\n\nÂ§7Â§lYour
+      story is yours to make.Â§r\n\nÂ§aÂ§lHave fun!Â§r"}]}'
+  schema_version: 1

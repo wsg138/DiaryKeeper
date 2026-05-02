@@ -10,6 +10,9 @@ import org.bukkit.plugin.Plugin;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.util.List;
 
 public final class WelcomeBookItem {
@@ -71,16 +74,45 @@ public final class WelcomeBookItem {
 
     private WelcomeBookTemplate loadTemplate() {
         if (!templateFile.exists()) {
-            return defaultTemplate();
+            if (!copyBundledTemplate()) {
+                return defaultTemplate();
+            }
         }
 
-        YamlConfiguration data = YamlConfiguration.loadConfiguration(templateFile);
-        ItemStack book = data.getItemStack(TEMPLATE_KEY);
-        if (book == null || !(book.getItemMeta() instanceof BookMeta)) {
-            return defaultTemplate();
+        ItemStack book = readTemplateItem();
+        if (book == null) {
+            if (copyBundledTemplate()) {
+                book = readTemplateItem();
+            }
+            if (book == null) {
+                return defaultTemplate();
+            }
         }
         book.setAmount(1);
         return new WelcomeBookTemplate(book);
+    }
+
+    private ItemStack readTemplateItem() {
+        YamlConfiguration data = YamlConfiguration.loadConfiguration(templateFile);
+        ItemStack book = data.getItemStack(TEMPLATE_KEY);
+        if (book == null || !(book.getItemMeta() instanceof BookMeta)) {
+            return null;
+        }
+        return book;
+    }
+
+    private boolean copyBundledTemplate() {
+        try (InputStream input = plugin.getResource(TEMPLATE_FILE_NAME)) {
+            if (input == null) {
+                return false;
+            }
+            Files.createDirectories(templateFile.getParentFile().toPath());
+            Files.copy(input, templateFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            return true;
+        } catch (IOException ex) {
+            plugin.getLogger().warning("Failed to copy bundled " + TEMPLATE_FILE_NAME + ": " + ex.getMessage());
+            return false;
+        }
     }
 
     private String color(String text) {
