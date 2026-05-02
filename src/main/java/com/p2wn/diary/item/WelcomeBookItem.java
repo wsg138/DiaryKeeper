@@ -13,6 +13,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
 import java.util.List;
 
 public final class WelcomeBookItem {
@@ -91,6 +92,7 @@ public final class WelcomeBookItem {
             }
         }
         book.setAmount(1);
+        sanitizeBookMeta(book);
         return new WelcomeBookTemplate(book);
     }
 
@@ -101,6 +103,49 @@ public final class WelcomeBookItem {
             return null;
         }
         return book;
+    }
+
+    private void sanitizeBookMeta(ItemStack book) {
+        if (!(book.getItemMeta() instanceof BookMeta meta)) {
+            return;
+        }
+
+        boolean changed = false;
+        List<String> pages = new ArrayList<>(meta.getPages());
+        for (int i = 0; i < pages.size(); i++) {
+            String cleaned = cleanText(pages.get(i));
+            if (!cleaned.equals(pages.get(i))) {
+                pages.set(i, cleaned);
+                changed = true;
+            }
+        }
+
+        if (changed) {
+            meta.setPages(pages);
+            book.setItemMeta(meta);
+            saveSanitizedTemplate(book);
+        }
+    }
+
+    private void saveSanitizedTemplate(ItemStack book) {
+        YamlConfiguration data = new YamlConfiguration();
+        data.set(TEMPLATE_KEY, book);
+        try {
+            data.save(templateFile);
+        } catch (IOException ex) {
+            plugin.getLogger().warning("Failed to resave sanitized " + TEMPLATE_FILE_NAME + ": " + ex.getMessage());
+        }
+    }
+
+    private String cleanText(String text) {
+        if (text == null || text.isEmpty()) {
+            return text;
+        }
+        return text
+                .replace("Ã‚Â§", "§")
+                .replace("Ã‚", "")
+                .replace("Â§", "§")
+                .replace("Â", "");
     }
 
     private boolean copyBundledTemplate() {
