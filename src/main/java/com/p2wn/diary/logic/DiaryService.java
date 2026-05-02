@@ -112,6 +112,8 @@ public final class DiaryService {
             trackerService.trackEnderChest(player);
         }
 
+        adoptExistingOwnedDiary(player);
+
         if (configManager.cfg().getBoolean("give-on-first-join", true)
                 && (!diaryStore.hasIssued(player.getUniqueId()) || diaryStore.getDiaryId(player.getUniqueId()) == null)) {
             ItemStack diary = diaryItem.createDiary(player.getUniqueId(), player.getName());
@@ -305,6 +307,36 @@ public final class DiaryService {
             duplicateWatcher.refreshPlayerSnapshot(player);
         }
         return true;
+    }
+
+    private void adoptExistingOwnedDiary(Player player) {
+        if (diaryStore.hasIssued(player.getUniqueId()) && diaryStore.getDiaryId(player.getUniqueId()) != null) {
+            return;
+        }
+
+        String existingDiaryId = findOwnedDiaryId(player.getUniqueId(), player.getInventory().getContents());
+        if (existingDiaryId == null) {
+            existingDiaryId = findOwnedDiaryId(player.getUniqueId(), player.getEnderChest().getContents());
+        }
+        if (existingDiaryId == null) {
+            return;
+        }
+
+        diaryStore.markIssued(player.getUniqueId(), existingDiaryId);
+        diaryStore.flushNow();
+    }
+
+    private String findOwnedDiaryId(UUID playerId, ItemStack[] contents) {
+        for (ItemStack stack : contents) {
+            if (!diaryItem.isDiary(stack) || !playerId.equals(diaryItem.getOwner(stack))) {
+                continue;
+            }
+            String diaryId = diaryItem.getDiaryId(stack);
+            if (diaryId != null && !diaryId.isBlank()) {
+                return diaryId;
+            }
+        }
+        return null;
     }
 
     private String resolveTargetName(OfflinePlayer target, String requestedName) {
