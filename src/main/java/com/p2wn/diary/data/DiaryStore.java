@@ -30,7 +30,6 @@ public final class DiaryStore {
     private static final class PlayerRecord {
         private String diaryId;
         private Long issuedAt;
-        private Long welcomeIssuedAt;
         private final Deque<PendingDelivery> pendingDeliveries = new ArrayDeque<>();
         private final Deque<PendingRemoval> pendingRemovals = new ArrayDeque<>();
     }
@@ -130,19 +129,6 @@ public final class DiaryStore {
     public long getIssuedAt(UUID playerId) {
         PlayerRecord record = records.get(playerId);
         return record == null || record.issuedAt == null ? 0L : record.issuedAt;
-    }
-
-    public boolean hasWelcomeIssued(UUID playerId) {
-        PlayerRecord record = records.get(playerId);
-        return record != null && record.welcomeIssuedAt != null;
-    }
-
-    public void markWelcomeIssued(UUID playerId) {
-        PlayerRecord record = getOrCreateRecord(playerId);
-        if (record.welcomeIssuedAt == null) {
-            record.welcomeIssuedAt = Instant.now().getEpochSecond();
-            markDirty();
-        }
     }
 
     public void queueDelivery(UUID playerId, DeliveryReason reason, ItemStack item) {
@@ -346,10 +332,6 @@ public final class DiaryStore {
             if (record.issuedAt != null) {
                 data.set("players." + playerKey + ".issuedAt", record.issuedAt);
             }
-            if (record.welcomeIssuedAt != null) {
-                data.set("players." + playerKey + ".welcomeIssuedAt", record.welcomeIssuedAt);
-            }
-
             int deliveryIndex = 0;
             for (PendingDelivery delivery : record.pendingDeliveries) {
                 String basePath = "pendingDeliveries." + playerKey + "." + deliveryIndex++;
@@ -401,10 +383,6 @@ public final class DiaryStore {
             long issuedAt = players.getLong(key + ".issuedAt", 0L);
             if (issuedAt > 0L) {
                 record.issuedAt = issuedAt;
-            }
-            long welcomeIssuedAt = players.getLong(key + ".welcomeIssuedAt", 0L);
-            if (welcomeIssuedAt > 0L) {
-                record.welcomeIssuedAt = welcomeIssuedAt;
             }
         }
     }

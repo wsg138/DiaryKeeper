@@ -6,7 +6,6 @@
 # - Delivery fallback is queue-only. If a player is offline or full, the diary waits safely.
 
 give-on-first-join: true
-give-welcome-book-on-first-join: true
 
 # Editing / signing
 allow-signing: false

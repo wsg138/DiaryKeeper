@@ -117,14 +117,8 @@ public final class DiaryService {
             ItemStack diary = diaryItem.createDiary(player.getUniqueId(), player.getName());
             Bukkit.getPluginManager().callEvent(new DiaryReceivedEvent(player, diary.clone()));
             deliverOrQueue(player, DeliveryReason.INITIAL_ISSUE, diary);
-            diaryStore.markIssued(player.getUniqueId());
-            diaryStore.flushNow();
-        }
-
-        if (configManager.cfg().getBoolean("give-welcome-book-on-first-join", true)
-                && !diaryStore.hasWelcomeIssued(player.getUniqueId())) {
             deliverOrDrop(player, welcomeBookItem.createWelcomeBook());
-            diaryStore.markWelcomeIssued(player.getUniqueId());
+            diaryStore.markIssued(player.getUniqueId());
             diaryStore.flushNow();
         }
 
