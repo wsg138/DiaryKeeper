@@ -127,18 +127,6 @@ public final class DiaryStore {
         }
     }
 
-    public void markIssued(UUID playerId, String diaryId) {
-        PlayerRecord record = getOrCreateRecord(playerId);
-        if (diaryId != null && !diaryId.isBlank() && (record.diaryId == null || record.diaryId.isBlank())) {
-            record.diaryId = diaryId;
-            markDirty();
-        }
-        if (record.issuedAt == null) {
-            record.issuedAt = Instant.now().getEpochSecond();
-            markDirty();
-        }
-    }
-
     public long getIssuedAt(UUID playerId) {
         PlayerRecord record = records.get(playerId);
         return record == null || record.issuedAt == null ? 0L : record.issuedAt;

@@ -112,8 +112,6 @@ public final class DiaryService {
             trackerService.trackEnderChest(player);
         }
 
-        adoptExistingOwnedDiary(player);
-
         if (configManager.cfg().getBoolean("give-on-first-join", true)
                 && (!diaryStore.hasIssued(player.getUniqueId()) || diaryStore.getDiaryId(player.getUniqueId()) == null)) {
             ItemStack diary = diaryItem.createDiary(player.getUniqueId(), player.getName());
@@ -125,7 +123,7 @@ public final class DiaryService {
 
         if (configManager.cfg().getBoolean("give-welcome-book-on-first-join", true)
                 && !diaryStore.hasWelcomeIssued(player.getUniqueId())) {
-            deliverOrQueue(player, DeliveryReason.INITIAL_ISSUE, welcomeBookItem.createWelcomeBook());
+            deliverOrDrop(player, welcomeBookItem.createWelcomeBook());
             diaryStore.markWelcomeIssued(player.getUniqueId());
             diaryStore.flushNow();
         }
@@ -309,34 +307,14 @@ public final class DiaryService {
         return true;
     }
 
-    private void adoptExistingOwnedDiary(Player player) {
-        if (diaryStore.hasIssued(player.getUniqueId()) && diaryStore.getDiaryId(player.getUniqueId()) != null) {
-            return;
+    private void deliverOrDrop(Player player, ItemStack item) {
+        Map<Integer, ItemStack> leftovers = player.getInventory().addItem(item.clone());
+        for (ItemStack leftover : leftovers.values()) {
+            player.getWorld().dropItemNaturally(player.getLocation(), leftover);
         }
-
-        String existingDiaryId = findOwnedDiaryId(player.getUniqueId(), player.getInventory().getContents());
-        if (existingDiaryId == null) {
-            existingDiaryId = findOwnedDiaryId(player.getUniqueId(), player.getEnderChest().getContents());
+        if (duplicateWatcher != null) {
+            duplicateWatcher.refreshPlayerSnapshot(player);
         }
-        if (existingDiaryId == null) {
-            return;
-        }
-
-        diaryStore.markIssued(player.getUniqueId(), existingDiaryId);
-        diaryStore.flushNow();
-    }
-
-    private String findOwnedDiaryId(UUID playerId, ItemStack[] contents) {
-        for (ItemStack stack : contents) {
-            if (!diaryItem.isDiary(stack) || !playerId.equals(diaryItem.getOwner(stack))) {
-                continue;
-            }
-            String diaryId = diaryItem.getDiaryId(stack);
-            if (diaryId != null && !diaryId.isBlank()) {
-                return diaryId;
-            }
-        }
-        return null;
     }
 
     private String resolveTargetName(OfflinePlayer target, String requestedName) {
