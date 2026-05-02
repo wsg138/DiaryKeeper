@@ -4,7 +4,7 @@ version: 1.2.0
 api-version: '1.21'
 authors: [ P2wn ]
 description: One-of-a-kind, owner-editable collectible diaries with safe queueing and duplicate warnings
-softdepend: [ Plan ]
+softdepend: [ Plan, Nexo ]
 commands:
   diary:
     description: Diary admin

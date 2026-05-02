@@ -14,8 +14,10 @@ import org.bukkit.inventory.meta.BookMeta;
 import org.bukkit.persistence.PersistentDataContainer;
 import org.bukkit.persistence.PersistentDataType;
 
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 public final class DiaryItem {
@@ -91,7 +93,7 @@ public final class DiaryItem {
 
     public ItemStack createDiary(UUID ownerId, String ownerName) {
         String diaryId = diaryStore.getOrCreateDiaryId(ownerId);
-        ItemStack stack = new ItemStack(Material.WRITABLE_BOOK);
+        ItemStack stack = createBaseDiaryStack();
         if (stack.getItemMeta() instanceof BookMeta meta) {
             applyCanonicalAppearance(meta, ownerId, ownerName, diaryId);
             stack.setItemMeta(meta);
@@ -107,6 +109,7 @@ public final class DiaryItem {
         if (diaryId == null || !(stack.getItemMeta() instanceof BookMeta meta)) {
             return;
         }
+        meta = mergeConfiguredBaseMeta(meta);
         applyCanonicalAppearance(meta, ownerId, ownerName, diaryId);
         stack.setItemMeta(meta);
     }
@@ -124,6 +127,7 @@ public final class DiaryItem {
 
         OfflinePlayer offlinePlayer = Bukkit.getOfflinePlayer(ownerId);
         String ownerName = offlinePlayer.getName() != null ? offlinePlayer.getName() : ownerId.toString();
+        meta = mergeConfiguredBaseMeta(meta);
         applyCanonicalAppearance(meta, ownerId, ownerName, diaryId);
         stack.setItemMeta(meta);
     }
@@ -153,5 +157,67 @@ public final class DiaryItem {
         pdc.set(keys.isDiary(), PersistentDataType.BOOLEAN, true);
         pdc.set(keys.ownerUuid(), PersistentDataType.STRING, ownerId.toString());
         pdc.set(keys.diaryId(), PersistentDataType.STRING, diaryId);
+    }
+
+    private ItemStack createBaseDiaryStack() {
+        ItemStack nexoStack = createConfiguredNexoStack();
+        if (nexoStack != null) {
+            return nexoStack;
+        }
+        return new ItemStack(Material.WRITABLE_BOOK);
+    }
+
+    private BookMeta mergeConfiguredBaseMeta(BookMeta currentMeta) {
+        ItemStack nexoStack = createConfiguredNexoStack();
+        if (nexoStack == null || !(nexoStack.getItemMeta() instanceof BookMeta baseMeta)) {
+            return currentMeta;
+        }
+
+        List<String> pages = currentMeta.getPages();
+        if (!pages.isEmpty()) {
+            baseMeta.setPages(pages);
+        }
+        if (currentMeta.hasTitle()) {
+            baseMeta.setTitle(currentMeta.getTitle());
+        }
+        if (currentMeta.hasAuthor()) {
+            baseMeta.setAuthor(currentMeta.getAuthor());
+        }
+        if (currentMeta.hasGeneration()) {
+            baseMeta.setGeneration(currentMeta.getGeneration());
+        }
+        return baseMeta;
+    }
+
+    private ItemStack createConfiguredNexoStack() {
+        String nexoItemId = configManager.cfg().getString("appearance.nexo-item-id", "diary_book");
+        if (nexoItemId == null || nexoItemId.isBlank() || !Bukkit.getPluginManager().isPluginEnabled("Nexo")) {
+            return null;
+        }
+
+        ItemStack nexoStack = createNexoItem(nexoItemId);
+        if (nexoStack == null || !(nexoStack.getItemMeta() instanceof BookMeta)) {
+            return null;
+        }
+        nexoStack.setAmount(1);
+        return nexoStack;
+    }
+
+    private ItemStack createNexoItem(String itemId) {
+        try {
+            Class<?> nexoItemsClass = Class.forName("com.nexomc.nexo.api.NexoItems");
+            Method optionalItemFromId = nexoItemsClass.getMethod("optionalItemFromId", String.class);
+            Object optionalBuilder = optionalItemFromId.invoke(null, itemId);
+            if (!(optionalBuilder instanceof Optional<?> optional) || optional.isEmpty()) {
+                return null;
+            }
+
+            Object itemBuilder = optional.get();
+            Method build = itemBuilder.getClass().getMethod("build");
+            Object built = build.invoke(itemBuilder);
+            return built instanceof ItemStack stack ? stack : null;
+        } catch (ReflectiveOperationException | RuntimeException ex) {
+            return null;
+        }
     }
 }

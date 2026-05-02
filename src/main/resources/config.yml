@@ -40,6 +40,9 @@ void:
 
 appearance:
   enchanted-glint: true
+  # Optional Nexo item ID used as the base item for newly issued diaries.
+  # Leave blank to use a normal writable book.
+  nexo-item-id: "diary_book"
   name-format: "&d{owner}'s Diary"
   lore:
     - "&7A unique collectible diary."
