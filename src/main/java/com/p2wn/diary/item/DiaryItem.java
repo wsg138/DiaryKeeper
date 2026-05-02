@@ -151,9 +151,11 @@ public final class DiaryItem {
         meta.setLore(lore);
 
         if (configManager.cfg().getBoolean("appearance.enchanted-glint", true)) {
-            meta.addEnchant(Enchantment.UNBREAKING, 1, true);
+            meta.removeEnchant(Enchantment.UNBREAKING);
+            meta.setEnchantmentGlintOverride(Boolean.TRUE);
         } else {
             meta.removeEnchant(Enchantment.UNBREAKING);
+            meta.setEnchantmentGlintOverride(Boolean.FALSE);
         }
         meta.addItemFlags(ItemFlag.HIDE_ENCHANTS);
 

@@ -70,7 +70,7 @@ public final class DiaryPlugin extends JavaPlugin {
         handleWorldReset();
 
         diaryItem = new DiaryItem(this, configManager, diaryStore, diaryKeys);
-        welcomeBookItem = new WelcomeBookItem();
+        welcomeBookItem = new WelcomeBookItem(this);
         diaryTrackerService = new DiaryTrackerService(diaryStore, diaryItem);
         duplicateWatcher = new DuplicateWatcher(this, configManager, diaryItem);
         deliveryService = new DeliveryService(this, diaryStore);
@@ -124,6 +124,7 @@ public final class DiaryPlugin extends JavaPlugin {
         diaryStore.reloadAutosave();
         diaryAnalyticsStore.reloadAutosave();
         diaryAnalyticsStore.reloadRetention();
+        welcomeBookItem.reload();
         deliveryService.reloadSettings();
         voidWatcher.reloadSettings();
         duplicateWatcher.sweepStartup();
@@ -180,6 +181,10 @@ public final class DiaryPlugin extends JavaPlugin {
 
     public RestoreGuiListener restoreGuiListener() {
         return restoreGuiListener;
+    }
+
+    public WelcomeBookItem welcomeBookItem() {
+        return welcomeBookItem;
     }
 
     private void handleWorldReset() {

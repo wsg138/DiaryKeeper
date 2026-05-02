@@ -10,6 +10,8 @@ import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabCompleter;
 import org.bukkit.entity.Player;
+import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.BookMeta;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -46,6 +48,7 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
             case "status" -> handleStatus(sender, args);
             case "find" -> handleFind(sender, args);
             case "restore" -> handleRestore(sender, args);
+            case "importwelcome" -> handleImportWelcome(sender);
             default -> {
                 sender.sendMessage(plugin.configManager().msg("admin.unknown-subcommand"));
                 yield true;
@@ -59,7 +62,7 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
             return List.of();
         }
         if (args.length == 1) {
-            return partial(List.of("reload", "issue", "status", "find", "restore"), args[0]);
+            return partial(List.of("reload", "issue", "status", "find", "restore", "importwelcome"), args[0]);
         }
         if (args.length == 2 && List.of("issue", "status", "find", "restore").contains(args[0].toLowerCase(Locale.ROOT))) {
             List<String> onlineNames = new ArrayList<>();
@@ -181,6 +184,7 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(plugin.configManager().msg("admin.usage-status"));
         sender.sendMessage(plugin.configManager().msg("admin.usage-find"));
         sender.sendMessage(plugin.configManager().msg("admin.usage-restore"));
+        sender.sendMessage("/diary importwelcome");
     }
 
     private List<String> partial(List<String> candidates, String input) {
@@ -188,5 +192,23 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
         return candidates.stream()
                 .filter(candidate -> candidate.toLowerCase(Locale.ROOT).startsWith(needle))
                 .toList();
+    }
+
+    private boolean handleImportWelcome(CommandSender sender) {
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage("This command can only be used in-game.");
+            return true;
+        }
+        ItemStack stack = player.getInventory().getItemInMainHand();
+        if (stack == null || !(stack.getItemMeta() instanceof BookMeta meta)) {
+            sender.sendMessage("Hold a written book with the pages you want to import.");
+            return true;
+        }
+        if (plugin.welcomeBookItem().importTemplate(meta)) {
+            sender.sendMessage("Imported welcome book template from your held book.");
+            return true;
+        }
+        sender.sendMessage("Failed to import the held book.");
+        return true;
     }
 }
