@@ -1,3 +1,4 @@
+config-version: 2
 prefix: "&6[Diary] &r"
 
 non-owner-edit: "&cYou can read this diary, but only the owner can edit it."

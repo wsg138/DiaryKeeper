@@ -114,7 +114,7 @@ public final class DiaryLocationRecord {
     }
 
     public static DiaryLocationRecord readFrom(ConfigurationSection section) {
-        DiaryLocationType type = DiaryLocationType.valueOf(section.getString("type", DiaryLocationType.UNKNOWN.name()).toUpperCase(Locale.ROOT));
+        DiaryLocationType type = parseType(section.getString("type"));
         return new DiaryLocationRecord(
                 type,
                 section.getString("description", "unknown"),
@@ -129,6 +129,14 @@ public final class DiaryLocationRecord {
                 new ArrayList<>(section.getStringList("nestedPath")),
                 section.getLong("updatedAt", 0L)
         );
+    }
+
+    private static DiaryLocationType parseType(String raw) {
+        try {
+            return raw == null ? DiaryLocationType.UNKNOWN : DiaryLocationType.valueOf(raw.toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException ex) {
+            return DiaryLocationType.UNKNOWN;
+        }
     }
 
     private static UUID parseUuid(String raw) {

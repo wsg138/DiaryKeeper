@@ -1,6 +1,7 @@
 package com.p2wn.diary.data;
 
 import com.p2wn.diary.util.ItemIO;
+import com.p2wn.diary.logic.PerformanceMonitor;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
@@ -48,7 +49,10 @@ public final class DiaryStore {
 
     private String lastWorldUid;
     private boolean dirty;
+    private int dirtyVersion;
+    private boolean saveQueued;
     private BukkitTask autosaveTask;
+    private PerformanceMonitor performanceMonitor;
 
     public DiaryStore(Plugin plugin) {
         this.plugin = plugin;
@@ -77,9 +81,16 @@ public final class DiaryStore {
         autosaveTask = plugin.getServer().getScheduler().runTaskTimer(plugin, this::flushIfDirty, interval, interval);
     }
 
+    public void setPerformanceMonitor(PerformanceMonitor performanceMonitor) {
+        this.performanceMonitor = performanceMonitor;
+    }
+
     public void shutdown() {
         stopAutosave();
-        flushNow();
+        if (saveQueued) {
+            plugin.getLogger().warning("diaries.yml async save was still queued during shutdown; forcing a final blocking flush if dirty.");
+        }
+        flushNowBlocking("shutdown");
     }
 
     public String getLastWorldUid() {
@@ -313,12 +324,35 @@ public final class DiaryStore {
     }
 
     public void flushIfDirty() {
-        if (dirty) {
+        if (dirty && !saveQueued) {
             flushNow();
         }
     }
 
     public void flushNow() {
+        if (!dirty || saveQueued) {
+            return;
+        }
+        FileConfiguration data = createSnapshot();
+        int version = dirtyVersion;
+        saveQueued = true;
+        if (performanceMonitor != null) {
+            performanceMonitor.yamlSaveQueued();
+        }
+        plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> saveSnapshot(data, version, false));
+    }
+
+    public void flushNowBlocking(String reason) {
+        if (!dirty) {
+            return;
+        }
+        FileConfiguration data = createSnapshot();
+        int version = dirtyVersion;
+        saveSnapshot(data, version, true);
+        plugin.getLogger().info("DiaryKeeper diaries.yml flush completed during " + reason + ".");
+    }
+
+    private FileConfiguration createSnapshot() {
         FileConfiguration data = new YamlConfiguration();
         data.set("lastWorldUid", lastWorldUid);
 
@@ -361,11 +395,25 @@ public final class DiaryStore {
             }
         }
 
+        return data;
+    }
+
+    private void saveSnapshot(FileConfiguration data, int version, boolean blocking) {
         try {
             data.save(file);
-            dirty = false;
+            if (dirtyVersion == version) {
+                dirty = false;
+            }
+            saveQueued = false;
+            if (performanceMonitor != null) {
+                performanceMonitor.yamlSaveFlushed();
+            }
         } catch (IOException ex) {
-            plugin.getLogger().warning("Failed to save diaries.yml: " + ex.getMessage());
+            saveQueued = false;
+            if (performanceMonitor != null) {
+                performanceMonitor.yamlSaveFailed();
+            }
+            plugin.getLogger().warning("Failed to save diaries.yml" + (blocking ? " during blocking flush" : "") + ": " + ex.getMessage());
         }
     }
 
@@ -434,10 +482,11 @@ public final class DiaryStore {
                 String basePath = key + "." + entryKey;
                 String diaryId = pendingRemovalsSection.getString(basePath + ".diaryId");
                 String locationType = pendingRemovalsSection.getString(basePath + ".locationType", DiaryLocationType.UNKNOWN.name());
+                DiaryLocationType parsedType = parseLocationType(locationType, "pendingRemovals." + basePath + ".locationType");
                 if (diaryId != null) {
                     record.pendingRemovals.addLast(new PendingRemoval(
                             diaryId,
-                            DiaryLocationType.valueOf(locationType.toUpperCase(Locale.ROOT)),
+                            parsedType,
                             parseUuid(pendingRemovalsSection.getString(basePath + ".holderUuid"))
                     ));
                 }
@@ -461,6 +510,9 @@ public final class DiaryStore {
             ConfigurationSection locationSection = section.getConfigurationSection("location");
             if (locationSection != null) {
                 state.location = DiaryLocationRecord.readFrom(locationSection);
+                if (state.location.type() == DiaryLocationType.UNKNOWN && locationSection.contains("type")) {
+                    plugin.getLogger().warning("Unknown tracked diary location type at trackedDiaries." + diaryId + ".location.type: " + locationSection.getString("type"));
+                }
             }
             diaryRecords.put(diaryId, state);
         }
@@ -500,6 +552,7 @@ public final class DiaryStore {
 
     private void markDirty() {
         dirty = true;
+        dirtyVersion++;
     }
 
     private UUID parseUuid(String input) {
@@ -512,9 +565,19 @@ public final class DiaryStore {
 
     private DeliveryReason parseReason(String input) {
         try {
-            return DeliveryReason.valueOf(input.toUpperCase(Locale.ROOT));
+            return input == null ? DeliveryReason.VOID_RETURN : DeliveryReason.valueOf(input.toUpperCase(Locale.ROOT));
         } catch (IllegalArgumentException ex) {
+            plugin.getLogger().warning("Unknown delivery reason in diaries.yml: " + input + ". Using VOID_RETURN.");
             return DeliveryReason.VOID_RETURN;
+        }
+    }
+
+    private DiaryLocationType parseLocationType(String input, String path) {
+        try {
+            return input == null ? DiaryLocationType.UNKNOWN : DiaryLocationType.valueOf(input.toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException ex) {
+            plugin.getLogger().warning("Unknown diary location type at " + path + ": " + input + ". Using UNKNOWN.");
+            return DiaryLocationType.UNKNOWN;
         }
     }
 

@@ -48,6 +48,8 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
             case "find" -> handleFind(sender, args);
             case "restore" -> handleRestore(sender, args);
             case "importwelcome" -> handleImportWelcome(sender);
+            case "scan" -> handleScan(sender, args);
+            case "repair" -> handleRepair(sender);
             default -> {
                 sender.sendMessage(plugin.configManager().msg("admin.unknown-subcommand"));
                 yield true;
@@ -61,7 +63,10 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
             return List.of();
         }
         if (args.length == 1) {
-            return partial(List.of("reload", "issue", "status", "find", "restore", "importwelcome"), args[0]);
+            return partial(List.of("reload", "issue", "status", "find", "restore", "scan", "repair", "importwelcome"), args[0]);
+        }
+        if (args.length == 2 && "scan".equalsIgnoreCase(args[0])) {
+            return partial(List.of("duplicates", "locations"), args[1]);
         }
         if (args.length == 2 && List.of("issue", "status", "find", "restore").contains(args[0].toLowerCase(Locale.ROOT))) {
             List<String> onlineNames = new ArrayList<>();
@@ -183,6 +188,8 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(plugin.configManager().msg("admin.usage-status"));
         sender.sendMessage(plugin.configManager().msg("admin.usage-find"));
         sender.sendMessage(plugin.configManager().msg("admin.usage-restore"));
+        sender.sendMessage("/diary scan <duplicates|locations>");
+        sender.sendMessage("/diary repair");
         sender.sendMessage("/diary importwelcome");
     }
 
@@ -208,6 +215,22 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
             return true;
         }
         sender.sendMessage("Failed to import the held book.");
+        return true;
+    }
+
+    private boolean handleScan(CommandSender sender, String[] args) {
+        if (args.length < 2 || (!"duplicates".equalsIgnoreCase(args[1]) && !"locations".equalsIgnoreCase(args[1]))) {
+            sender.sendMessage("Usage: /diary scan <duplicates|locations>");
+            return true;
+        }
+        plugin.duplicateWatcher().queueGlobalScan();
+        sender.sendMessage("Queued a staggered diary " + args[1].toLowerCase(Locale.ROOT) + " scan.");
+        return true;
+    }
+
+    private boolean handleRepair(CommandSender sender) {
+        plugin.duplicateWatcher().queueGlobalScan();
+        sender.sendMessage("Queued a staggered diary repair scan.");
         return true;
     }
 }

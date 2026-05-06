@@ -18,6 +18,7 @@ import org.bukkit.block.Container;
 import org.bukkit.block.ShulkerBox;
 import org.bukkit.entity.Item;
 import org.bukkit.entity.Player;
+import org.bukkit.entity.Entity;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.ItemStack;
@@ -185,7 +186,30 @@ public final class DiaryRestoreService {
             return RemovalResult.FAILED;
         }
 
+        UUID entityUuid = record.lastKnownLocation().entityUuid();
+        if (entityUuid != null) {
+            Entity entity = world.getEntity(entityUuid);
+            if (entity instanceof Item item && containsDiary(item.getItemStack(), record.diaryId())) {
+                item.remove();
+                return RemovalResult.REMOVED;
+            }
+        }
+
+        Location target = new Location(world, x + 0.5D, y + 0.5D, z + 0.5D);
+        for (Entity nearby : world.getNearbyEntities(target, 1.5D, 1.5D, 1.5D, entity -> entity instanceof Item)) {
+            Item item = (Item) nearby;
+            if (containsDiary(item.getItemStack(), record.diaryId())) {
+                item.remove();
+                return RemovalResult.REMOVED;
+            }
+        }
+
+        int checked = 0;
+        int maxFallbackChecks = Math.max(25, configManager.cfg().getInt("restore.max-ground-entity-fallback-checks", 200));
         for (Item entity : world.getEntitiesByClass(Item.class)) {
+            if (++checked > maxFallbackChecks) {
+                break;
+            }
             Location location = entity.getLocation();
             if (location.getBlockX() == x && location.getBlockY() == y && location.getBlockZ() == z) {
                 if (containsDiary(entity.getItemStack(), record.diaryId())) {

@@ -28,6 +28,7 @@ public final class VoidWatcher {
 
     private final Map<UUID, TrackedDrop> trackedDrops = new HashMap<>();
     private BukkitTask task;
+    private PerformanceMonitor performanceMonitor;
 
     public VoidWatcher(
             Plugin plugin,
@@ -43,6 +44,10 @@ public final class VoidWatcher {
         this.duplicateWatcher = duplicateWatcher;
     }
 
+    public void setPerformanceMonitor(PerformanceMonitor performanceMonitor) {
+        this.performanceMonitor = performanceMonitor;
+    }
+
     public void track(Item item) {
         if (!configManager.cfg().getBoolean("void.return-to-dropper", true)) {
             return;
@@ -51,6 +56,7 @@ public final class VoidWatcher {
             return;
         }
         trackedDrops.put(item.getUniqueId(), new TrackedDrop(item.getWorld().getUID()));
+        updateCounter();
         ensureRunning();
     }
 
@@ -60,6 +66,7 @@ public final class VoidWatcher {
         }
         trackedDrops.remove(item.getUniqueId());
         duplicateWatcher.removeGroundItemSnapshot(item.getUniqueId());
+        updateCounter();
         stopIfIdle();
     }
 
@@ -73,6 +80,7 @@ public final class VoidWatcher {
     public void shutdown() {
         stop();
         trackedDrops.clear();
+        updateCounter();
     }
 
     private void ensureRunning() {
@@ -108,6 +116,7 @@ public final class VoidWatcher {
             Item item = findTrackedItem(entry.getKey(), entry.getValue().worldId());
             if (item == null || item.isDead() || !diaryItem.isDiary(item.getItemStack())) {
                 iterator.remove();
+                updateCounter();
                 continue;
             }
 
@@ -115,6 +124,7 @@ public final class VoidWatcher {
             if (item.getLocation().getY() < (minY - 2)) {
                 handleVoid(item);
                 iterator.remove();
+                updateCounter();
             }
         }
 
@@ -146,5 +156,11 @@ public final class VoidWatcher {
 
         deliveryService.queue(dropperId, DeliveryReason.VOID_RETURN, item.getItemStack().clone());
         item.remove();
+    }
+
+    private void updateCounter() {
+        if (performanceMonitor != null) {
+            performanceMonitor.voidTrackedItems(trackedDrops.size());
+        }
     }
 }

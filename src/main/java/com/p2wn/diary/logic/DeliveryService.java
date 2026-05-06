@@ -24,6 +24,7 @@ public final class DeliveryService {
     private DiaryService diaryService;
     private DiaryTrackerService trackerService;
     private DiaryAnalyticsStore analyticsStore;
+    private PerformanceMonitor performanceMonitor;
 
     public DeliveryService(Plugin plugin, DiaryStore diaryStore) {
         this.plugin = plugin;
@@ -42,9 +43,14 @@ public final class DeliveryService {
         this.analyticsStore = analyticsStore;
     }
 
+    public void setPerformanceMonitor(PerformanceMonitor performanceMonitor) {
+        this.performanceMonitor = performanceMonitor;
+    }
+
     public void queue(UUID playerId, DeliveryReason reason, ItemStack item) {
         diaryStore.queueDelivery(playerId, reason, item);
-        diaryStore.flushNow();
+        diaryStore.flushIfDirty();
+        updateDeliveryQueueSize();
         if (analyticsStore != null) {
             OfflinePlayer offlinePlayer = Bukkit.getOfflinePlayer(playerId);
             String playerName = offlinePlayer.getName() != null ? offlinePlayer.getName() : playerId.toString();
@@ -69,6 +75,7 @@ public final class DeliveryService {
         if (!diaryStore.getPlayersWithPendingDeliveries().isEmpty()) {
             ensureRunning();
         }
+        updateDeliveryQueueSize();
     }
 
     public void shutdown() {
@@ -141,10 +148,12 @@ public final class DeliveryService {
 
             if (deliveredCount > 0) {
                 diaryStore.removeFirstPendingDeliveries(playerId, deliveredCount);
+                diaryStore.flushIfDirty();
                 if (trackerService != null) {
                     trackerService.trackPlayerInventory(player);
                 }
                 diaryService.refreshOwnedDiaries(player);
+                updateDeliveryQueueSize();
             }
 
             processedPlayers++;
@@ -153,6 +162,7 @@ public final class DeliveryService {
         if (diaryStore.getPlayersWithPendingDeliveries().isEmpty()) {
             stop();
         }
+        updateDeliveryQueueSize();
     }
 
     private String extractDiaryId(ItemStack item) {
@@ -160,5 +170,11 @@ public final class DeliveryService {
             return null;
         }
         return diaryService.getDiaryId(item);
+    }
+
+    private void updateDeliveryQueueSize() {
+        if (performanceMonitor != null) {
+            performanceMonitor.deliveryQueueSize(diaryStore.getTotalPendingDeliveryCount());
+        }
     }
 }

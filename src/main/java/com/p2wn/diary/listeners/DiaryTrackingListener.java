@@ -18,10 +18,17 @@ import org.bukkit.event.inventory.InventoryMoveItemEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.inventory.Inventory;
+import org.bukkit.scheduler.BukkitTask;
+
+import java.util.HashMap;
+import java.util.Map;
+import java.util.UUID;
 
 public final class DiaryTrackingListener implements Listener {
 
     private final DiaryPlugin plugin;
+    private final Map<UUID, BukkitTask> pendingPlayerScans = new HashMap<>();
+    private final Map<String, BukkitTask> pendingInventoryScans = new HashMap<>();
 
     public DiaryTrackingListener(DiaryPlugin plugin) {
         this.plugin = plugin;
@@ -44,10 +51,11 @@ public final class DiaryTrackingListener implements Listener {
         if (!(event.getWhoClicked() instanceof Player player)) {
             return;
         }
-        plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
-            plugin.diaryTrackerService().trackPlayerInventory(player);
-            plugin.diaryTrackerService().trackInventoryView(player, event.getView().getTopInventory());
-        }, 1L);
+        if (!isLikelyDiaryRelated(event)) {
+            return;
+        }
+        schedulePlayerScan(player);
+        scheduleInventoryScan(player, event.getView().getTopInventory());
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -55,26 +63,28 @@ public final class DiaryTrackingListener implements Listener {
         if (!(event.getWhoClicked() instanceof Player player)) {
             return;
         }
-        plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
-            plugin.diaryTrackerService().trackPlayerInventory(player);
-            plugin.diaryTrackerService().trackInventoryView(player, event.getView().getTopInventory());
-        }, 1L);
+        if (!plugin.restrictionService().isDiaryOrNestedDiary(event.getOldCursor())) {
+            return;
+        }
+        schedulePlayerScan(player);
+        scheduleInventoryScan(player, event.getView().getTopInventory());
     }
 
     @EventHandler
     public void onInventoryClose(InventoryCloseEvent event) {
         if (event.getPlayer() instanceof Player player) {
-            plugin.diaryTrackerService().trackPlayerInventory(player);
-            plugin.diaryTrackerService().trackInventoryView(player, event.getInventory());
+            schedulePlayerScan(player);
+            scheduleInventoryScan(player, event.getInventory());
         }
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onInventoryMove(InventoryMoveItemEvent event) {
-        plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
-            trackBlockInventory(event.getSource());
-            trackBlockInventory(event.getDestination());
-        }, 1L);
+        if (!plugin.restrictionService().isDiaryOrNestedDiary(event.getItem())) {
+            return;
+        }
+        scheduleInventoryScan(event.getSource());
+        scheduleInventoryScan(event.getDestination());
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -87,7 +97,10 @@ public final class DiaryTrackingListener implements Listener {
         if (!(event.getEntity() instanceof Player player)) {
             return;
         }
-        plugin.getServer().getScheduler().runTaskLater(plugin, () -> plugin.diaryTrackerService().trackPlayerInventory(player), 1L);
+        if (!plugin.restrictionService().isDiaryOrNestedDiary(event.getItem().getItemStack())) {
+            return;
+        }
+        schedulePlayerScan(player);
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -105,5 +118,74 @@ public final class DiaryTrackingListener implements Listener {
         if (inventory.getHolder() instanceof BlockState state) {
             plugin.diaryTrackerService().trackBlockInventory(state.getBlock(), inventory, java.util.List.of());
         }
+    }
+
+    private boolean isLikelyDiaryRelated(InventoryClickEvent event) {
+        if (plugin.restrictionService().isDiaryOrNestedDiary(event.getCurrentItem())
+                || plugin.restrictionService().isDiaryOrNestedDiary(event.getCursor())) {
+            return true;
+        }
+        return switch (event.getAction()) {
+            case HOTBAR_SWAP, HOTBAR_MOVE_AND_READD ->
+                    plugin.restrictionService().isDiaryOrNestedDiary(plugin.restrictionService().getHotbarOrOffhandItem(event));
+            default -> false;
+        };
+    }
+
+    private void schedulePlayerScan(Player player) {
+        UUID playerId = player.getUniqueId();
+        if (pendingPlayerScans.containsKey(playerId)) {
+            plugin.performanceMonitor().diaryScanCoalesced();
+            return;
+        }
+        plugin.performanceMonitor().diaryScanQueued();
+        pendingPlayerScans.put(playerId, plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
+            pendingPlayerScans.remove(playerId);
+            if (player.isOnline()) {
+                plugin.diaryTrackerService().trackPlayerInventory(player);
+            }
+        }, 2L));
+    }
+
+    private void scheduleInventoryScan(Player player, Inventory inventory) {
+        if (inventory == null) {
+            return;
+        }
+        String key = inventoryKey(inventory);
+        if (pendingInventoryScans.containsKey(key)) {
+            plugin.performanceMonitor().diaryScanCoalesced();
+            return;
+        }
+        plugin.performanceMonitor().diaryScanQueued();
+        pendingInventoryScans.put(key, plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
+            pendingInventoryScans.remove(key);
+            if (player.isOnline()) {
+                plugin.diaryTrackerService().trackInventoryView(player, inventory);
+            }
+        }, 2L));
+    }
+
+    private void scheduleInventoryScan(Inventory inventory) {
+        if (inventory == null) {
+            return;
+        }
+        String key = inventoryKey(inventory);
+        if (pendingInventoryScans.containsKey(key)) {
+            plugin.performanceMonitor().diaryScanCoalesced();
+            return;
+        }
+        plugin.performanceMonitor().diaryScanQueued();
+        pendingInventoryScans.put(key, plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
+            pendingInventoryScans.remove(key);
+            trackBlockInventory(inventory);
+        }, 2L));
+    }
+
+    private String inventoryKey(Inventory inventory) {
+        if (inventory.getHolder() instanceof BlockState state) {
+            var block = state.getBlock();
+            return block.getWorld().getUID() + ":" + block.getX() + ":" + block.getY() + ":" + block.getZ();
+        }
+        return "inventory:" + System.identityHashCode(inventory);
     }
 }

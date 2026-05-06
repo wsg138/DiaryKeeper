@@ -31,13 +31,19 @@ public final class DiaryTrackerService {
 
     private final DiaryStore diaryStore;
     private final DiaryItem diaryItem;
+    private PerformanceMonitor performanceMonitor;
 
     public DiaryTrackerService(DiaryStore diaryStore, DiaryItem diaryItem) {
         this.diaryStore = diaryStore;
         this.diaryItem = diaryItem;
     }
 
+    public void setPerformanceMonitor(PerformanceMonitor performanceMonitor) {
+        this.performanceMonitor = performanceMonitor;
+    }
+
     public void trackPlayerInventory(Player player) {
+        countInventoryScan();
         scanInventory(player.getInventory(), inventoryLocation(
                 DiaryLocationType.PLAYER_INVENTORY,
                 "in " + player.getName() + "'s inventory",
@@ -50,6 +56,7 @@ public final class DiaryTrackerService {
     }
 
     public void trackEnderChest(Player player) {
+        countContainerScan();
         scanInventory(player.getEnderChest(), inventoryLocation(
                 DiaryLocationType.PLAYER_ENDER_CHEST,
                 "in " + player.getName() + "'s ender chest",
@@ -94,6 +101,7 @@ public final class DiaryTrackerService {
         }
         String containerName = prettifyMaterial(block.getType());
         String description = nestedDescription(nestedPath, "in a " + containerName + " at " + formatCoords(block.getLocation()));
+        countContainerScan();
         scanInventory(inventory, inventoryLocation(
                 DiaryLocationType.BLOCK_CONTAINER,
                 description,
@@ -182,6 +190,9 @@ public final class DiaryTrackerService {
         }
 
         if (stack.hasItemMeta() && stack.getItemMeta() instanceof BlockStateMeta blockStateMeta && blockStateMeta.getBlockState() instanceof ShulkerBox shulkerBox) {
+            if (performanceMonitor != null) {
+                performanceMonitor.shulkerScanned();
+            }
             DiaryLocationRecord nestedLocation = withNested(currentLocation, "inside a shulker");
             for (ItemStack nested : shulkerBox.getInventory().getContents()) {
                 scanItemStack(nested, nestedLocation);
@@ -273,5 +284,17 @@ public final class DiaryTrackerService {
         }
         OfflinePlayer owner = Bukkit.getOfflinePlayer(ownerId);
         return owner.getName();
+    }
+
+    private void countInventoryScan() {
+        if (performanceMonitor != null) {
+            performanceMonitor.inventoryScanned();
+        }
+    }
+
+    private void countContainerScan() {
+        if (performanceMonitor != null) {
+            performanceMonitor.containerScanned();
+        }
     }
 }

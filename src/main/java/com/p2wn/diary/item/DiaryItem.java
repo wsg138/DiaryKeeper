@@ -29,6 +29,8 @@ public final class DiaryItem {
     private final DiaryStore diaryStore;
     private final DiaryKeys keys;
     private boolean warnedNexoFallback;
+    private String cachedNexoItemId;
+    private ItemStack cachedNexoBase;
 
     public DiaryItem(Plugin plugin, ConfigManager configManager, DiaryStore diaryStore, DiaryKeys keys) {
         this.plugin = plugin;
@@ -137,6 +139,12 @@ public final class DiaryItem {
         stack.setItemMeta(meta);
     }
 
+    public void clearNexoCache() {
+        cachedNexoItemId = null;
+        cachedNexoBase = null;
+        warnedNexoFallback = false;
+    }
+
     private void applyCanonicalAppearance(BookMeta meta, UUID ownerId, String ownerName, String diaryId) {
         String displayName = configManager.cfg().getString("appearance.name-format", "&d{owner}'s Diary")
                 .replace("{owner}", ownerName);
@@ -200,6 +208,9 @@ public final class DiaryItem {
         if (nexoItemId == null || nexoItemId.isBlank() || !Bukkit.getPluginManager().isPluginEnabled("Nexo")) {
             return null;
         }
+        if (nexoItemId.equals(cachedNexoItemId) && cachedNexoBase != null) {
+            return cachedNexoBase.clone();
+        }
 
         ItemStack nexoStack = createNexoItem(nexoItemId);
         if (nexoStack == null) {
@@ -210,7 +221,9 @@ public final class DiaryItem {
             return null;
         }
         nexoStack.setAmount(1);
-        return nexoStack;
+        cachedNexoItemId = nexoItemId;
+        cachedNexoBase = nexoStack.clone();
+        return nexoStack.clone();
     }
 
     private ItemStack createNexoItem(String itemId) {

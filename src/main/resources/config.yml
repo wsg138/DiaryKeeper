@@ -1,4 +1,5 @@
 # DiaryKeeper configuration
+config-version: 2
 #
 # Notes:
 # - Diaries stay WRITABLE_BOOK items forever unless you intentionally redesign that behavior in code.
@@ -58,6 +59,15 @@ duplicates:
   debounce-seconds: 60
   max-listed-occurrences: 5
 
+duplicate-scan:
+  enabled: true
+  interval-minutes: 10
+  max-players-per-tick: 2
+  max-chunks-per-tick: 2
+  max-entities-per-tick: 80
+  repair-mode: true
+  report-only: false
+
 # Delivery queue tuning.
 # These values cap work per tick so the plugin stays predictable with many players online.
 delivery:
@@ -77,6 +87,14 @@ analytics:
   retention-days: 30
   max-events: 1000
 
+restore:
+  max-ground-entity-fallback-checks: 200
+
 # Periodic persistence for player diary IDs and queued deliveries.
 storage:
   save-interval-ticks: 1200
+
+debug:
+  performance:
+    enabled: false
+    log-interval-seconds: 300

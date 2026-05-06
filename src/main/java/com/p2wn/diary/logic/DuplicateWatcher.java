@@ -19,10 +19,13 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.BlockStateMeta;
 import org.bukkit.inventory.meta.BundleMeta;
 import org.bukkit.plugin.Plugin;
+import org.bukkit.scheduler.BukkitTask;
 
 import java.time.Instant;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -33,6 +36,7 @@ import java.util.UUID;
 public final class DuplicateWatcher {
 
     private record Occurrence(String diaryId, String holderName, String whereTag, String coords) {}
+    private record ChunkScanTarget(UUID worldId, int x, int z, int nextEntityIndex) {}
 
     private final Plugin plugin;
     private final ConfigManager configManager;
@@ -41,6 +45,12 @@ public final class DuplicateWatcher {
     private final Map<String, Long> lastWarnAt = new HashMap<>();
     private final Map<UUID, List<Occurrence>> playerSnapshots = new HashMap<>();
     private final Map<UUID, Occurrence> groundItemSnapshots = new HashMap<>();
+    private final Deque<UUID> queuedPlayerScans = new ArrayDeque<>();
+    private final Deque<ChunkScanTarget> queuedChunkScans = new ArrayDeque<>();
+    private final Map<String, ChunkScanTarget> queuedChunkKeys = new HashMap<>();
+    private BukkitTask scanTask;
+    private BukkitTask periodicTask;
+    private PerformanceMonitor performanceMonitor;
 
     public DuplicateWatcher(Plugin plugin, ConfigManager configManager, DiaryItem diaryItem) {
         this.plugin = plugin;
@@ -48,13 +58,45 @@ public final class DuplicateWatcher {
         this.diaryItem = diaryItem;
     }
 
+    public void setPerformanceMonitor(PerformanceMonitor performanceMonitor) {
+        this.performanceMonitor = performanceMonitor;
+    }
+
+    public void reloadSettings() {
+        stopPeriodicTask();
+        if (!configManager.cfg().getBoolean("duplicate-scan.enabled", true)) {
+            stopScanTask();
+            queuedPlayerScans.clear();
+            queuedChunkScans.clear();
+            queuedChunkKeys.clear();
+            updateQueueSizeCounter();
+            return;
+        }
+        long interval = Math.max(1L, configManager.cfg().getLong("duplicate-scan.interval-minutes", 10L)) * 60L * 20L;
+        periodicTask = plugin.getServer().getScheduler().runTaskTimer(plugin, this::queueGlobalScan, interval, interval);
+        ensureScanTask();
+    }
+
+    public void shutdown() {
+        stopScanTask();
+        stopPeriodicTask();
+        queuedPlayerScans.clear();
+        queuedChunkScans.clear();
+        queuedChunkKeys.clear();
+        updateQueueSizeCounter();
+    }
+
     public void refreshPlayerSnapshot(Player player) {
+        playerSnapshots.put(player.getUniqueId(), scanPlayerOccurrences(player));
+    }
+
+    private List<Occurrence> scanPlayerOccurrences(Player player) {
         List<Occurrence> occurrences = new ArrayList<>();
         String holderName = player.getName();
         String coords = coordsOf(player.getLocation());
         scanInventoryContents(player.getInventory().getContents(), holderName, "player", coords, occurrences);
         scanInventoryContents(player.getEnderChest().getContents(), holderName, "ender_chest", coords, occurrences);
-        playerSnapshots.put(player.getUniqueId(), occurrences);
+        return occurrences;
     }
 
     public void removePlayerSnapshot(UUID playerId) {
@@ -91,10 +133,7 @@ public final class DuplicateWatcher {
     }
 
     public void onChunkLoad(Chunk chunk) {
-        List<Occurrence> occurrences = scanChunkItems(chunk);
-        if (configManager.cfg().getBoolean("duplicates.warn-on-chunk-load", true)) {
-            warnForIds(occurrences, "chunk " + chunk.getX() + "," + chunk.getZ());
-        }
+        queueChunkScan(chunk);
     }
 
     public void onChunkUnload(Chunk chunk) {
@@ -106,22 +145,41 @@ public final class DuplicateWatcher {
     public void sweepStartup() {
         playerSnapshots.clear();
         groundItemSnapshots.clear();
+        queuedPlayerScans.clear();
+        queuedChunkScans.clear();
+        queuedChunkKeys.clear();
+        queueGlobalScan();
+    }
+
+    public void queueGlobalScan() {
+        if (!configManager.cfg().getBoolean("duplicate-scan.enabled", true)) {
+            return;
+        }
 
         for (Player player : Bukkit.getOnlinePlayers()) {
-            refreshPlayerSnapshot(player);
+            queuePlayerScan(player.getUniqueId());
         }
         for (org.bukkit.World world : Bukkit.getWorlds()) {
             for (Chunk chunk : world.getLoadedChunks()) {
-                scanChunkItems(chunk);
+                queueChunkScan(chunk);
             }
         }
+        ensureScanTask();
+        updateQueueSizeCounter();
+    }
 
-        if (configManager.cfg().getBoolean("duplicates.warn-on-startup", true)) {
-            List<Occurrence> occurrences = new ArrayList<>();
-            playerSnapshots.values().forEach(occurrences::addAll);
-            occurrences.addAll(groundItemSnapshots.values());
-            warnForIds(occurrences, "startup");
+    public void queuePlayerScan(UUID playerId) {
+        if (playerId == null || queuedPlayerScans.contains(playerId)) {
+            if (performanceMonitor != null) {
+                performanceMonitor.diaryScanCoalesced();
+            }
+            return;
         }
+        queuedPlayerScans.addLast(playerId);
+        if (performanceMonitor != null) {
+            performanceMonitor.diaryScanQueued();
+        }
+        ensureScanTask();
     }
 
     private List<Occurrence> scanContainerInventory(HumanEntity opener, Inventory inventory) {
@@ -184,19 +242,143 @@ public final class DuplicateWatcher {
     }
 
     private List<Occurrence> scanChunkItems(Chunk chunk) {
+        return scanChunkItems(chunk, 0, Integer.MAX_VALUE).occurrences();
+    }
+
+    private ChunkScanResult scanChunkItems(Chunk chunk, int startIndex, int maxEntities) {
         List<Occurrence> occurrences = new ArrayList<>();
-        for (org.bukkit.entity.Entity entity : chunk.getEntities()) {
+        org.bukkit.entity.Entity[] entities = chunk.getEntities();
+        int processed = 0;
+        int index = Math.max(0, startIndex);
+        for (; index < entities.length && processed < maxEntities; index++) {
+            org.bukkit.entity.Entity entity = entities[index];
+            processed++;
             if (entity instanceof Item item && diaryItem.isDiary(item.getItemStack())) {
                 String diaryId = diaryItem.getDiaryId(item.getItemStack());
                 if (diaryId == null) {
                     continue;
                 }
                 Occurrence occurrence = new Occurrence(diaryId, "ground", "item", coordsOf(item.getLocation()));
-                groundItemSnapshots.put(item.getUniqueId(), occurrence);
+                if (isRepairEnabled()) {
+                    groundItemSnapshots.put(item.getUniqueId(), occurrence);
+                }
                 occurrences.add(occurrence);
             }
         }
-        return occurrences;
+        return new ChunkScanResult(occurrences, index, index < entities.length);
+    }
+
+    private record ChunkScanResult(List<Occurrence> occurrences, int nextEntityIndex, boolean incomplete) {}
+
+    private void queueChunkScan(Chunk chunk) {
+        if (chunk == null || !configManager.cfg().getBoolean("duplicate-scan.enabled", true)) {
+            return;
+        }
+        String key = chunk.getWorld().getUID() + ":" + chunk.getX() + ":" + chunk.getZ();
+        if (queuedChunkKeys.containsKey(key)) {
+            if (performanceMonitor != null) {
+                performanceMonitor.diaryScanCoalesced();
+            }
+            return;
+        }
+        ChunkScanTarget target = new ChunkScanTarget(chunk.getWorld().getUID(), chunk.getX(), chunk.getZ(), 0);
+        queuedChunkKeys.put(key, target);
+        queuedChunkScans.addLast(target);
+        if (performanceMonitor != null) {
+            performanceMonitor.diaryScanQueued();
+        }
+        ensureScanTask();
+        updateQueueSizeCounter();
+    }
+
+    private void ensureScanTask() {
+        if (scanTask != null || !configManager.cfg().getBoolean("duplicate-scan.enabled", true)) {
+            return;
+        }
+        scanTask = plugin.getServer().getScheduler().runTaskTimer(plugin, this::scanTick, 1L, 1L);
+    }
+
+    private void scanTick() {
+        int maxPlayers = Math.max(1, configManager.cfg().getInt("duplicate-scan.max-players-per-tick", 2));
+        int maxChunks = Math.max(1, configManager.cfg().getInt("duplicate-scan.max-chunks-per-tick", 2));
+        int maxEntities = Math.max(1, configManager.cfg().getInt("duplicate-scan.max-entities-per-tick", 80));
+
+        for (int i = 0; i < maxPlayers && !queuedPlayerScans.isEmpty(); i++) {
+            UUID playerId = queuedPlayerScans.removeFirst();
+            Player player = Bukkit.getPlayer(playerId);
+            if (player != null && player.isOnline()) {
+                List<Occurrence> occurrences;
+                if (isRepairEnabled()) {
+                    refreshPlayerSnapshot(player);
+                    occurrences = playerSnapshots.getOrDefault(playerId, List.of());
+                } else {
+                    occurrences = scanPlayerOccurrences(player);
+                }
+                if (isRepairEnabled()) {
+                    if (performanceMonitor != null) {
+                        performanceMonitor.duplicateScanRepair();
+                    }
+                }
+                if (configManager.cfg().getBoolean("duplicates.warn-on-startup", true)) {
+                    warnForIds(occurrences, "staggered-player-scan");
+                }
+            }
+        }
+
+        for (int i = 0; i < maxChunks && !queuedChunkScans.isEmpty(); i++) {
+            ChunkScanTarget target = queuedChunkScans.removeFirst();
+            String key = target.worldId() + ":" + target.x() + ":" + target.z();
+            queuedChunkKeys.remove(key);
+            org.bukkit.World world = Bukkit.getWorld(target.worldId());
+            if (world == null || !world.isChunkLoaded(target.x(), target.z())) {
+                continue;
+            }
+            Chunk chunk = world.getChunkAt(target.x(), target.z());
+            ChunkScanResult result = scanChunkItems(chunk, target.nextEntityIndex(), maxEntities);
+            if (configManager.cfg().getBoolean("duplicates.warn-on-chunk-load", true)) {
+                warnForIds(result.occurrences(), "staggered-chunk-scan " + target.x() + "," + target.z());
+            }
+            if (isRepairEnabled() && !result.occurrences().isEmpty()) {
+                if (performanceMonitor != null) {
+                    performanceMonitor.duplicateScanRepair();
+                }
+            }
+            if (result.incomplete()) {
+                ChunkScanTarget resumed = new ChunkScanTarget(target.worldId(), target.x(), target.z(), result.nextEntityIndex());
+                queuedChunkKeys.put(key, resumed);
+                queuedChunkScans.addLast(resumed);
+            }
+        }
+
+        updateQueueSizeCounter();
+        if (queuedPlayerScans.isEmpty() && queuedChunkScans.isEmpty()) {
+            stopScanTask();
+        }
+    }
+
+    private void stopScanTask() {
+        if (scanTask != null) {
+            scanTask.cancel();
+            scanTask = null;
+        }
+    }
+
+    private void stopPeriodicTask() {
+        if (periodicTask != null) {
+            periodicTask.cancel();
+            periodicTask = null;
+        }
+    }
+
+    private void updateQueueSizeCounter() {
+        if (performanceMonitor != null) {
+            performanceMonitor.duplicateScanQueueSize(queuedPlayerScans.size() + queuedChunkScans.size());
+        }
+    }
+
+    private boolean isRepairEnabled() {
+        return configManager.cfg().getBoolean("duplicate-scan.repair-mode", true)
+                && !configManager.cfg().getBoolean("duplicate-scan.report-only", false);
     }
 
     private void warnForIds(List<Occurrence> triggerOccurrences, String scopeTag) {

@@ -1,5 +1,6 @@
 package com.p2wn.diary.data;
 
+import com.p2wn.diary.logic.PerformanceMonitor;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
@@ -11,8 +12,10 @@ import java.io.IOException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
 
 public final class DiaryAnalyticsStore {
@@ -20,9 +23,14 @@ public final class DiaryAnalyticsStore {
     private final Plugin plugin;
     private final File file;
     private final List<DiaryAnalyticsEvent> events = new ArrayList<>();
+    private final Map<UUID, List<DiaryAnalyticsEvent>> eventsByPlayer = new HashMap<>();
+    private final Map<UUID, Long> lastActivityByPlayer = new HashMap<>();
 
     private boolean dirty;
+    private int dirtyVersion;
+    private boolean saveQueued;
     private BukkitTask autosaveTask;
+    private PerformanceMonitor performanceMonitor;
 
     public DiaryAnalyticsStore(Plugin plugin) {
         this.plugin = plugin;
@@ -31,6 +39,8 @@ public final class DiaryAnalyticsStore {
 
     public void load() {
         events.clear();
+        eventsByPlayer.clear();
+        lastActivityByPlayer.clear();
         dirty = false;
 
         FileConfiguration data = YamlConfiguration.loadConfiguration(file);
@@ -43,10 +53,16 @@ public final class DiaryAnalyticsStore {
             DiaryAnalyticsEvent event = readEvent(section.getConfigurationSection(key));
             if (event != null) {
                 events.add(event);
+                index(event);
             }
         }
         events.sort(Comparator.comparingLong(DiaryAnalyticsEvent::occurredAt));
+        rebuildIndexes();
         prune();
+    }
+
+    public void setPerformanceMonitor(PerformanceMonitor performanceMonitor) {
+        this.performanceMonitor = performanceMonitor;
     }
 
     public void reloadAutosave() {
@@ -62,7 +78,10 @@ public final class DiaryAnalyticsStore {
 
     public void shutdown() {
         stopAutosave();
-        flushNow();
+        if (saveQueued) {
+            plugin.getLogger().warning("analytics.yml async save was still queued during shutdown; forcing a final blocking flush if dirty.");
+        }
+        flushNowBlocking("shutdown");
     }
 
     public void record(DiaryAnalyticsEventType type, UUID playerUuid, String playerName, String diaryId, String detail) {
@@ -74,7 +93,9 @@ public final class DiaryAnalyticsStore {
                 diaryId,
                 detail
         ));
-        dirty = true;
+        DiaryAnalyticsEvent event = events.get(events.size() - 1);
+        index(event);
+        markDirty();
         prune();
     }
 
@@ -86,9 +107,7 @@ public final class DiaryAnalyticsStore {
         if (playerUuid == null) {
             return List.of();
         }
-        List<DiaryAnalyticsEvent> matches = events.stream()
-                .filter(event -> playerUuid.equals(event.playerUuid()))
-                .toList();
+        List<DiaryAnalyticsEvent> matches = eventsByPlayer.getOrDefault(playerUuid, List.of());
         return newest(matches, limit);
     }
 
@@ -103,22 +122,39 @@ public final class DiaryAnalyticsStore {
         if (playerUuid == null) {
             return 0L;
         }
-        long latest = 0L;
-        for (DiaryAnalyticsEvent event : events) {
-            if (playerUuid.equals(event.playerUuid())) {
-                latest = Math.max(latest, event.occurredAt());
-            }
-        }
-        return latest;
+        return lastActivityByPlayer.getOrDefault(playerUuid, 0L);
     }
 
     public void flushIfDirty() {
-        if (dirty) {
+        if (dirty && !saveQueued) {
             flushNow();
         }
     }
 
     public void flushNow() {
+        if (!dirty || saveQueued) {
+            return;
+        }
+        FileConfiguration data = createSnapshot();
+        int version = dirtyVersion;
+        saveQueued = true;
+        if (performanceMonitor != null) {
+            performanceMonitor.analyticsSaveQueued();
+        }
+        plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> saveSnapshot(data, version, false));
+    }
+
+    public void flushNowBlocking(String reason) {
+        if (!dirty) {
+            return;
+        }
+        FileConfiguration data = createSnapshot();
+        int version = dirtyVersion;
+        saveSnapshot(data, version, true);
+        plugin.getLogger().info("DiaryKeeper analytics.yml flush completed during " + reason + ".");
+    }
+
+    private FileConfiguration createSnapshot() {
         FileConfiguration data = new YamlConfiguration();
         int index = 0;
         for (DiaryAnalyticsEvent event : events) {
@@ -131,11 +167,25 @@ public final class DiaryAnalyticsStore {
             data.set(basePath + ".detail", event.detail());
         }
 
+        return data;
+    }
+
+    private void saveSnapshot(FileConfiguration data, int version, boolean blocking) {
         try {
             data.save(file);
-            dirty = false;
+            if (dirtyVersion == version) {
+                dirty = false;
+            }
+            saveQueued = false;
+            if (performanceMonitor != null) {
+                performanceMonitor.analyticsSaveFlushed();
+            }
         } catch (IOException ex) {
-            plugin.getLogger().warning("Failed to save analytics.yml: " + ex.getMessage());
+            saveQueued = false;
+            if (performanceMonitor != null) {
+                performanceMonitor.analyticsSaveFailed();
+            }
+            plugin.getLogger().warning("Failed to save analytics.yml" + (blocking ? " during blocking flush" : "") + ": " + ex.getMessage());
         }
     }
 
@@ -144,8 +194,10 @@ public final class DiaryAnalyticsStore {
             return List.of();
         }
         int from = Math.max(0, source.size() - limit);
-        List<DiaryAnalyticsEvent> results = new ArrayList<>(source.subList(from, source.size()));
-        results.sort(Comparator.comparingLong(DiaryAnalyticsEvent::occurredAt).reversed());
+        List<DiaryAnalyticsEvent> results = new ArrayList<>(Math.min(limit, source.size()));
+        for (int i = source.size() - 1; i >= from; i--) {
+            results.add(source.get(i));
+        }
         return results;
     }
 
@@ -162,7 +214,29 @@ public final class DiaryAnalyticsStore {
         }
 
         if (removed) {
-            dirty = true;
+            rebuildIndexes();
+            markDirty();
+        }
+    }
+
+    private void markDirty() {
+        dirty = true;
+        dirtyVersion++;
+    }
+
+    private void index(DiaryAnalyticsEvent event) {
+        if (event.playerUuid() == null) {
+            return;
+        }
+        eventsByPlayer.computeIfAbsent(event.playerUuid(), ignored -> new ArrayList<>()).add(event);
+        lastActivityByPlayer.merge(event.playerUuid(), event.occurredAt(), Math::max);
+    }
+
+    private void rebuildIndexes() {
+        eventsByPlayer.clear();
+        lastActivityByPlayer.clear();
+        for (DiaryAnalyticsEvent event : events) {
+            index(event);
         }
     }
 
