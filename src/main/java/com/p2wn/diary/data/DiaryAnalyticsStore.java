@@ -9,6 +9,9 @@ import org.bukkit.scheduler.BukkitTask;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -17,11 +20,15 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 
 public final class DiaryAnalyticsStore {
 
     private final Plugin plugin;
     private final File file;
+    private final Object stateLock = new Object();
+    private final Object fileSaveLock = new Object();
     private final List<DiaryAnalyticsEvent> events = new ArrayList<>();
     private final Map<UUID, List<DiaryAnalyticsEvent>> eventsByPlayer = new HashMap<>();
     private final Map<UUID, Long> lastActivityByPlayer = new HashMap<>();
@@ -29,6 +36,7 @@ public final class DiaryAnalyticsStore {
     private boolean dirty;
     private int dirtyVersion;
     private boolean saveQueued;
+    private CompletableFuture<Void> runningSave;
     private BukkitTask autosaveTask;
     private PerformanceMonitor performanceMonitor;
 
@@ -78,9 +86,6 @@ public final class DiaryAnalyticsStore {
 
     public void shutdown() {
         stopAutosave();
-        if (saveQueued) {
-            plugin.getLogger().warning("analytics.yml async save was still queued during shutdown; forcing a final blocking flush if dirty.");
-        }
         flushNowBlocking("shutdown");
     }
 
@@ -126,35 +131,53 @@ public final class DiaryAnalyticsStore {
     }
 
     public void flushIfDirty() {
-        if (dirty && !saveQueued) {
+        if (isDirtyAndIdle()) {
             flushNow();
         }
     }
 
     public void flushNow() {
-        if (!dirty || saveQueued) {
-            return;
+        synchronized (stateLock) {
+            if (!dirty) {
+                countSaveSkipped();
+                return;
+            }
+            if (saveQueued) {
+                countSaveSkipped();
+                return;
+            }
         }
-        FileConfiguration data = createSnapshot();
-        int version = dirtyVersion;
-        saveQueued = true;
+
+        SaveSnapshot snapshot = createSnapshot();
+        CompletableFuture<Void> future = new CompletableFuture<>();
+        synchronized (stateLock) {
+            if (saveQueued) {
+                countSaveSkipped();
+                return;
+            }
+            saveQueued = true;
+            runningSave = future;
+        }
         if (performanceMonitor != null) {
             performanceMonitor.analyticsSaveQueued();
+            performanceMonitor.analyticsSaveRunning(1);
         }
-        plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> saveSnapshot(data, version, false));
+        plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> saveSnapshot(snapshot, future, false));
     }
 
     public void flushNowBlocking(String reason) {
-        if (!dirty) {
-            return;
+        waitForRunningSave(reason);
+        synchronized (stateLock) {
+            if (!dirty) {
+                countSaveSkipped();
+                return;
+            }
         }
-        FileConfiguration data = createSnapshot();
-        int version = dirtyVersion;
-        saveSnapshot(data, version, true);
-        plugin.getLogger().info("DiaryKeeper analytics.yml flush completed during " + reason + ".");
+        SaveSnapshot snapshot = createSnapshot();
+        saveSnapshot(snapshot, null, true);
     }
 
-    private FileConfiguration createSnapshot() {
+    private SaveSnapshot createSnapshot() {
         FileConfiguration data = new YamlConfiguration();
         int index = 0;
         for (DiaryAnalyticsEvent event : events) {
@@ -167,25 +190,91 @@ public final class DiaryAnalyticsStore {
             data.set(basePath + ".detail", event.detail());
         }
 
-        return data;
+        return new SaveSnapshot(data, currentDirtyVersion());
     }
 
-    private void saveSnapshot(FileConfiguration data, int version, boolean blocking) {
+    private void saveSnapshot(SaveSnapshot snapshot, CompletableFuture<Void> future, boolean blocking) {
+        boolean success = false;
         try {
-            data.save(file);
-            if (dirtyVersion == version) {
-                dirty = false;
-            }
-            saveQueued = false;
+            writeAtomically(snapshot.data());
+            success = true;
             if (performanceMonitor != null) {
                 performanceMonitor.analyticsSaveFlushed();
             }
         } catch (IOException ex) {
-            saveQueued = false;
             if (performanceMonitor != null) {
                 performanceMonitor.analyticsSaveFailed();
             }
             plugin.getLogger().warning("Failed to save analytics.yml" + (blocking ? " during blocking flush" : "") + ": " + ex.getMessage());
+        } finally {
+            synchronized (stateLock) {
+                if (success && dirtyVersion == snapshot.version()) {
+                    dirty = false;
+                }
+                saveQueued = false;
+                if (runningSave == future) {
+                    runningSave = null;
+                }
+            }
+            if (performanceMonitor != null) {
+                performanceMonitor.analyticsSaveRunning(0);
+            }
+            if (future != null) {
+                future.complete(null);
+            }
+            if (success && blocking) {
+                plugin.getLogger().info("DiaryKeeper analytics.yml flush completed during blocking flush.");
+            }
+        }
+    }
+
+    private void writeAtomically(FileConfiguration data) throws IOException {
+        synchronized (fileSaveLock) {
+            Files.createDirectories(file.getParentFile().toPath());
+            File temp = new File(file.getParentFile(), file.getName() + ".tmp");
+            data.save(temp);
+            try {
+                Files.move(temp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException ex) {
+                Files.move(temp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            }
+        }
+    }
+
+    private void waitForRunningSave(String reason) {
+        CompletableFuture<Void> future;
+        synchronized (stateLock) {
+            future = runningSave;
+        }
+        if (future == null) {
+            return;
+        }
+        try {
+            plugin.getLogger().info("Waiting for running analytics.yml async save before " + reason + " flush.");
+            future.get();
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            plugin.getLogger().warning("Interrupted while waiting for analytics.yml async save before " + reason + ".");
+        } catch (ExecutionException ex) {
+            plugin.getLogger().warning("analytics.yml async save failed before " + reason + ": " + ex.getMessage());
+        }
+    }
+
+    private boolean isDirtyAndIdle() {
+        synchronized (stateLock) {
+            return dirty && !saveQueued;
+        }
+    }
+
+    private void countSaveSkipped() {
+        if (performanceMonitor != null) {
+            performanceMonitor.analyticsSaveSkipped();
+        }
+    }
+
+    private int currentDirtyVersion() {
+        synchronized (stateLock) {
+            return dirtyVersion;
         }
     }
 
@@ -220,8 +309,10 @@ public final class DiaryAnalyticsStore {
     }
 
     private void markDirty() {
-        dirty = true;
-        dirtyVersion++;
+        synchronized (stateLock) {
+            dirty = true;
+            dirtyVersion++;
+        }
     }
 
     private void index(DiaryAnalyticsEvent event) {
@@ -284,4 +375,6 @@ public final class DiaryAnalyticsStore {
             autosaveTask = null;
         }
     }
+
+    private record SaveSnapshot(FileConfiguration data, int version) {}
 }

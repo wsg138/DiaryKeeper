@@ -11,10 +11,12 @@ import org.bukkit.scheduler.BukkitTask;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.HashMap;
@@ -25,6 +27,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 
 public final class DiaryStore {
 
@@ -44,6 +48,8 @@ public final class DiaryStore {
 
     private final Plugin plugin;
     private final File file;
+    private final Object stateLock = new Object();
+    private final Object fileSaveLock = new Object();
     private final Map<UUID, PlayerRecord> records = new HashMap<>();
     private final Map<String, DiaryRecordState> diaryRecords = new HashMap<>();
 
@@ -51,6 +57,7 @@ public final class DiaryStore {
     private boolean dirty;
     private int dirtyVersion;
     private boolean saveQueued;
+    private CompletableFuture<Void> runningSave;
     private BukkitTask autosaveTask;
     private PerformanceMonitor performanceMonitor;
 
@@ -87,9 +94,6 @@ public final class DiaryStore {
 
     public void shutdown() {
         stopAutosave();
-        if (saveQueued) {
-            plugin.getLogger().warning("diaries.yml async save was still queued during shutdown; forcing a final blocking flush if dirty.");
-        }
         flushNowBlocking("shutdown");
     }
 
@@ -324,35 +328,73 @@ public final class DiaryStore {
     }
 
     public void flushIfDirty() {
-        if (dirty && !saveQueued) {
+        if (isDirtyAndIdle()) {
             flushNow();
         }
     }
 
     public void flushNow() {
-        if (!dirty || saveQueued) {
+        synchronized (stateLock) {
+            if (!dirty) {
+                countSaveSkipped();
+                return;
+            }
+            if (saveQueued) {
+                countSaveSkipped();
+                return;
+            }
+        }
+
+        SaveSnapshot snapshot;
+        try {
+            snapshot = createSnapshot();
+        } catch (IOException ex) {
+            if (performanceMonitor != null) {
+                performanceMonitor.yamlSaveFailed();
+            }
+            plugin.getLogger().warning("Failed to serialize diaries.yml snapshot: " + ex.getMessage());
             return;
         }
-        FileConfiguration data = createSnapshot();
-        int version = dirtyVersion;
-        saveQueued = true;
+
+        CompletableFuture<Void> future = new CompletableFuture<>();
+        synchronized (stateLock) {
+            if (saveQueued) {
+                countSaveSkipped();
+                return;
+            }
+            saveQueued = true;
+            runningSave = future;
+        }
         if (performanceMonitor != null) {
             performanceMonitor.yamlSaveQueued();
+            performanceMonitor.yamlSaveRunning(1);
         }
-        plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> saveSnapshot(data, version, false));
+        plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> saveSnapshot(snapshot, future, false));
     }
 
     public void flushNowBlocking(String reason) {
-        if (!dirty) {
+        waitForRunningSave(reason);
+        synchronized (stateLock) {
+            if (!dirty) {
+                countSaveSkipped();
+                return;
+            }
+        }
+
+        SaveSnapshot snapshot;
+        try {
+            snapshot = createSnapshot();
+        } catch (IOException ex) {
+            if (performanceMonitor != null) {
+                performanceMonitor.yamlSaveFailed();
+            }
+            plugin.getLogger().warning("Failed to serialize diaries.yml snapshot during " + reason + ": " + ex.getMessage());
             return;
         }
-        FileConfiguration data = createSnapshot();
-        int version = dirtyVersion;
-        saveSnapshot(data, version, true);
-        plugin.getLogger().info("DiaryKeeper diaries.yml flush completed during " + reason + ".");
+        saveSnapshot(snapshot, null, true);
     }
 
-    private FileConfiguration createSnapshot() {
+    private SaveSnapshot createSnapshot() throws IOException {
         FileConfiguration data = new YamlConfiguration();
         data.set("lastWorldUid", lastWorldUid);
 
@@ -370,7 +412,7 @@ public final class DiaryStore {
             for (PendingDelivery delivery : record.pendingDeliveries) {
                 String basePath = "pendingDeliveries." + playerKey + "." + deliveryIndex++;
                 data.set(basePath + ".reason", delivery.reason().name());
-                data.set(basePath + ".item", delivery.item());
+                data.set(basePath + ".itemBase64", ItemIO.toBase64(delivery.item()));
             }
 
             int removalIndex = 0;
@@ -388,32 +430,98 @@ public final class DiaryStore {
             String basePath = "trackedDiaries." + diaryId;
             data.set(basePath + ".ownerUuid", state.ownerUuid == null ? null : state.ownerUuid.toString());
             data.set(basePath + ".ownerName", state.ownerName);
-            data.set(basePath + ".snapshot", state.snapshot);
+            data.set(basePath + ".snapshotBase64", state.snapshot == null ? null : ItemIO.toBase64(state.snapshot));
             if (state.location != null) {
                 ConfigurationSection locationSection = data.createSection(basePath + ".location");
                 state.location.writeTo(locationSection);
             }
         }
 
-        return data;
+        return new SaveSnapshot(data, currentDirtyVersion());
     }
 
-    private void saveSnapshot(FileConfiguration data, int version, boolean blocking) {
+    private void saveSnapshot(SaveSnapshot snapshot, CompletableFuture<Void> future, boolean blocking) {
+        boolean success = false;
         try {
-            data.save(file);
-            if (dirtyVersion == version) {
-                dirty = false;
-            }
-            saveQueued = false;
+            writeAtomically(snapshot.data());
+            success = true;
             if (performanceMonitor != null) {
                 performanceMonitor.yamlSaveFlushed();
             }
         } catch (IOException ex) {
-            saveQueued = false;
             if (performanceMonitor != null) {
                 performanceMonitor.yamlSaveFailed();
             }
             plugin.getLogger().warning("Failed to save diaries.yml" + (blocking ? " during blocking flush" : "") + ": " + ex.getMessage());
+        } finally {
+            synchronized (stateLock) {
+                if (success && dirtyVersion == snapshot.version()) {
+                    dirty = false;
+                }
+                saveQueued = false;
+                if (runningSave == future) {
+                    runningSave = null;
+                }
+            }
+            if (performanceMonitor != null) {
+                performanceMonitor.yamlSaveRunning(0);
+            }
+            if (future != null) {
+                future.complete(null);
+            }
+            if (success && blocking) {
+                plugin.getLogger().info("DiaryKeeper diaries.yml flush completed during blocking flush.");
+            }
+        }
+    }
+
+    private void writeAtomically(FileConfiguration data) throws IOException {
+        synchronized (fileSaveLock) {
+            Files.createDirectories(file.getParentFile().toPath());
+            File temp = new File(file.getParentFile(), file.getName() + ".tmp");
+            data.save(temp);
+            try {
+                Files.move(temp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException ex) {
+                Files.move(temp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            }
+        }
+    }
+
+    private void waitForRunningSave(String reason) {
+        CompletableFuture<Void> future;
+        synchronized (stateLock) {
+            future = runningSave;
+        }
+        if (future == null) {
+            return;
+        }
+        plugin.getLogger().info("Waiting for running diaries.yml async save before " + reason + " flush.");
+        try {
+            future.get();
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            plugin.getLogger().warning("Interrupted while waiting for diaries.yml async save before " + reason + ".");
+        } catch (ExecutionException ex) {
+            plugin.getLogger().warning("diaries.yml async save failed before " + reason + ": " + ex.getMessage());
+        }
+    }
+
+    private boolean isDirtyAndIdle() {
+        synchronized (stateLock) {
+            return dirty && !saveQueued;
+        }
+    }
+
+    private void countSaveSkipped() {
+        if (performanceMonitor != null) {
+            performanceMonitor.yamlSaveSkipped();
+        }
+    }
+
+    private int currentDirtyVersion() {
+        synchronized (stateLock) {
+            return dirtyVersion;
         }
     }
 
@@ -453,7 +561,7 @@ public final class DiaryStore {
                 for (String entryKey : orderedKeys) {
                     String basePath = key + "." + entryKey;
                     String rawReason = pending.getString(basePath + ".reason", DeliveryReason.VOID_RETURN.name());
-                    ItemStack item = pending.getItemStack(basePath + ".item");
+                    ItemStack item = readItem(pending, basePath + ".itemBase64", basePath + ".item");
                     if (item != null) {
                         record.pendingDeliveries.addLast(new PendingDelivery(parseReason(rawReason), item));
                     }
@@ -506,7 +614,7 @@ public final class DiaryStore {
             DiaryRecordState state = new DiaryRecordState();
             state.ownerUuid = parseUuid(section.getString("ownerUuid"));
             state.ownerName = section.getString("ownerName");
-            state.snapshot = section.getItemStack("snapshot");
+            state.snapshot = readItem(section, "snapshotBase64", "snapshot");
             ConfigurationSection locationSection = section.getConfigurationSection("location");
             if (locationSection != null) {
                 state.location = DiaryLocationRecord.readFrom(locationSection);
@@ -551,8 +659,10 @@ public final class DiaryStore {
     }
 
     private void markDirty() {
-        dirty = true;
-        dirtyVersion++;
+        synchronized (stateLock) {
+            dirty = true;
+            dirtyVersion++;
+        }
     }
 
     private UUID parseUuid(String input) {
@@ -601,4 +711,19 @@ public final class DiaryStore {
         }
         return null;
     }
+
+    private ItemStack readItem(ConfigurationSection section, String base64Path, String legacyPath) {
+        String encoded = section.getString(base64Path);
+        if (encoded != null && !encoded.isBlank()) {
+            try {
+                return ItemIO.fromBase64(encoded);
+            } catch (IOException ex) {
+                plugin.getLogger().warning("Failed to deserialize item at " + section.getCurrentPath() + "." + base64Path + ": " + ex.getMessage());
+                return null;
+            }
+        }
+        return section.getItemStack(legacyPath);
+    }
+
+    private record SaveSnapshot(FileConfiguration data, int version) {}
 }

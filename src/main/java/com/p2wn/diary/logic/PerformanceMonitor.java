@@ -17,9 +17,13 @@ public final class PerformanceMonitor {
     private final AtomicLong duplicateScanRepairs = new AtomicLong();
     private final AtomicLong voidTrackedItems = new AtomicLong();
     private final AtomicLong yamlSavesQueued = new AtomicLong();
+    private final AtomicLong yamlSavesSkipped = new AtomicLong();
+    private final AtomicLong yamlSavesRunning = new AtomicLong();
     private final AtomicLong yamlSavesFlushed = new AtomicLong();
     private final AtomicLong yamlSavesFailed = new AtomicLong();
     private final AtomicLong analyticsSavesQueued = new AtomicLong();
+    private final AtomicLong analyticsSavesSkipped = new AtomicLong();
+    private final AtomicLong analyticsSavesRunning = new AtomicLong();
     private final AtomicLong analyticsSavesFlushed = new AtomicLong();
     private final AtomicLong analyticsSavesFailed = new AtomicLong();
     private final AtomicLong deliveryQueueSize = new AtomicLong();
@@ -78,6 +82,14 @@ public final class PerformanceMonitor {
         yamlSavesQueued.incrementAndGet();
     }
 
+    public void yamlSaveSkipped() {
+        yamlSavesSkipped.incrementAndGet();
+    }
+
+    public void yamlSaveRunning(long running) {
+        yamlSavesRunning.set(running);
+    }
+
     public void yamlSaveFlushed() {
         yamlSavesFlushed.incrementAndGet();
     }
@@ -88,6 +100,14 @@ public final class PerformanceMonitor {
 
     public void analyticsSaveQueued() {
         analyticsSavesQueued.incrementAndGet();
+    }
+
+    public void analyticsSaveSkipped() {
+        analyticsSavesSkipped.incrementAndGet();
+    }
+
+    public void analyticsSaveRunning(long running) {
+        analyticsSavesRunning.set(running);
     }
 
     public void analyticsSaveFlushed() {
@@ -119,9 +139,13 @@ public final class PerformanceMonitor {
                 + " duplicateRepairs=" + duplicateScanRepairs.getAndSet(0)
                 + " voidTracked=" + voidTrackedItems.get()
                 + " yamlQueued=" + yamlSavesQueued.getAndSet(0)
+                + " yamlSkipped=" + yamlSavesSkipped.getAndSet(0)
+                + " yamlRunning=" + yamlSavesRunning.get()
                 + " yamlFlushed=" + yamlSavesFlushed.getAndSet(0)
                 + " yamlFailed=" + yamlSavesFailed.getAndSet(0)
                 + " analyticsQueued=" + analyticsSavesQueued.getAndSet(0)
+                + " analyticsSkipped=" + analyticsSavesSkipped.getAndSet(0)
+                + " analyticsRunning=" + analyticsSavesRunning.get()
                 + " analyticsFlushed=" + analyticsSavesFlushed.getAndSet(0)
                 + " analyticsFailed=" + analyticsSavesFailed.getAndSet(0)
                 + " deliveryQueue=" + deliveryQueueSize.get());
