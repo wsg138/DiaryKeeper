@@ -8,6 +8,7 @@ import org.bukkit.event.inventory.ClickType;
 import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.event.inventory.InventoryMoveItemEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.inventory.InventoryType;
 import org.bukkit.inventory.Inventory;
 
 import java.util.Set;
@@ -89,7 +90,7 @@ public final class ShulkerGuardListener implements Listener {
             return;
         }
         if (event.getDestination() != null
-                && event.getDestination().getHolder() instanceof org.bukkit.block.ShulkerBox
+                && event.getDestination().getType() == InventoryType.SHULKER_BOX
                 && plugin.restrictionService().isDiaryOrNestedDiary(event.getItem())) {
             event.setCancelled(true);
         }

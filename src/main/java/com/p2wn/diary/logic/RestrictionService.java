@@ -7,9 +7,9 @@ import org.bukkit.block.ShulkerBox;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryType;
 import org.bukkit.inventory.Inventory;
-import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.InventoryView;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.BlockStateMeta;
 import org.bukkit.inventory.meta.BundleMeta;
 
 import java.util.EnumMap;
@@ -75,11 +75,9 @@ public final class RestrictionService {
     }
 
     public boolean isShulkerTop(InventoryView view) {
-        if (view == null || view.getTopInventory() == null) {
-            return false;
-        }
-        InventoryHolder holder = view.getTopInventory().getHolder();
-        return holder instanceof ShulkerBox;
+        return view != null
+                && view.getTopInventory() != null
+                && view.getTopInventory().getType() == InventoryType.SHULKER_BOX;
     }
 
     public boolean isRestrictedDestination(Inventory inventory) {
@@ -87,20 +85,40 @@ public final class RestrictionService {
     }
 
     public boolean isDiaryOrNestedDiary(ItemStack item) {
+        return isDiaryOrNestedDiary(item, 0);
+    }
+
+    private boolean isDiaryOrNestedDiary(ItemStack item, int depth) {
         if (item == null) {
             return false;
         }
         if (diaryItem.isDiary(item)) {
             return true;
         }
+        if (depth >= 2 || !item.hasItemMeta()) {
+            return false;
+        }
         if (item.getType() == Material.BUNDLE && item.hasItemMeta() && item.getItemMeta() instanceof BundleMeta meta) {
             for (ItemStack nested : meta.getItems()) {
-                if (diaryItem.isDiary(nested)) {
+                if (isDiaryOrNestedDiary(nested, depth + 1)) {
+                    return true;
+                }
+            }
+        }
+        if (isShulkerBoxItem(item)
+                && item.getItemMeta() instanceof BlockStateMeta meta
+                && meta.getBlockState() instanceof ShulkerBox shulkerBox) {
+            for (ItemStack nested : shulkerBox.getInventory().getContents()) {
+                if (isDiaryOrNestedDiary(nested, depth + 1)) {
                     return true;
                 }
             }
         }
         return false;
+    }
+
+    private boolean isShulkerBoxItem(ItemStack item) {
+        return item.getType().name().endsWith("SHULKER_BOX");
     }
 
     public ItemStack getHotbarOrOffhandItem(InventoryClickEvent event) {
