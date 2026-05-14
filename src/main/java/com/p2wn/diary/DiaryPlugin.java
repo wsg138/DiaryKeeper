@@ -19,6 +19,7 @@ import com.p2wn.diary.listeners.GrindstoneGuardListener;
 import com.p2wn.diary.listeners.InventoryOpenListener;
 import com.p2wn.diary.listeners.ItemProtectionListener;
 import com.p2wn.diary.listeners.JoinListener;
+import com.p2wn.diary.listeners.LumaGuildVaultGuardListener;
 import com.p2wn.diary.listeners.MetaGuardListener;
 import com.p2wn.diary.listeners.RestoreGuiListener;
 import com.p2wn.diary.listeners.ShulkerGuardListener;
@@ -270,6 +271,7 @@ public final class DiaryPlugin extends JavaPlugin {
         pluginManager.registerEvents(new BundleGuardListener(this), this);
         pluginManager.registerEvents(new ShulkerGuardListener(this), this);
         pluginManager.registerEvents(new ContainerGuardListener(this), this);
+        pluginManager.registerEvents(new LumaGuildVaultGuardListener(this), this);
         pluginManager.registerEvents(restoreGuiListener, this);
     }
 

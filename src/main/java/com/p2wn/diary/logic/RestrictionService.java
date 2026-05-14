@@ -7,6 +7,7 @@ import org.bukkit.block.ShulkerBox;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryType;
 import org.bukkit.inventory.Inventory;
+import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.InventoryView;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.BlockStateMeta;
@@ -82,6 +83,21 @@ public final class RestrictionService {
 
     public boolean isRestrictedDestination(Inventory inventory) {
         return inventory != null && isRestrictedInventoryType(inventory.getType());
+    }
+
+    public boolean isLumaGuildVault(Inventory inventory) {
+        if (inventory == null) {
+            return false;
+        }
+        InventoryHolder holder = inventory.getHolder();
+        return holder != null
+                && "net.lumalyte.lg.interaction.inventory.VaultInventoryHolder".equals(holder.getClass().getName());
+    }
+
+    public boolean isLumaGuildVaultTop(InventoryView view) {
+        return view != null
+                && view.getTopInventory() != null
+                && isLumaGuildVault(view.getTopInventory());
     }
 
     public boolean isDiaryOrNestedDiary(ItemStack item) {

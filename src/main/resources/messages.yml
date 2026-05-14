@@ -9,6 +9,7 @@ reload-complete: "&aConfig, messages, and runtime settings reloaded."
 
 staff:
   enderchest-diary-alert: "&cStaff Alert: &e{player} &chas a diary or diary-containing item in their ender chest."
+  guild-vault-diary-alert: "&cStaff Alert: &e{vault} &chas a diary or diary-containing item inside. Opened by &e{player}&c."
 
 admin:
   no-permission: "&cNo permission."
