@@ -1,4 +1,4 @@
-config-version: 2
+config-version: 3
 prefix: "&6[Diary] &r"
 
 non-owner-edit: "&cYou can read this diary, but only the owner can edit it."
@@ -6,6 +6,9 @@ signing-disabled: "&eDiaries stay writable; signing is disabled."
 ascii-only: "&cDiaries only allow standard English keyboard characters and basic symbols."
 void-returned: "&aA diary that fell into the void was returned to you."
 reload-complete: "&aConfig, messages, and runtime settings reloaded."
+
+staff:
+  enderchest-diary-alert: "&cStaff Alert: &e{player} &chas a diary or diary-containing item in their ender chest."
 
 admin:
   no-permission: "&cNo permission."

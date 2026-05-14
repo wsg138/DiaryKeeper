@@ -1,5 +1,5 @@
 # DiaryKeeper configuration
-config-version: 2
+config-version: 3
 #
 # Notes:
 # - Diaries stay WRITABLE_BOOK items forever unless you intentionally redesign that behavior in code.
@@ -58,6 +58,9 @@ duplicates:
   staff-notify: true
   debounce-seconds: 60
   max-listed-occurrences: 5
+
+alerts:
+  enderchest-diary-on-join: true
 
 duplicate-scan:
   enabled: true

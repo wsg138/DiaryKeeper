@@ -14,11 +14,15 @@ import com.p2wn.diary.item.DiaryItem;
 import com.p2wn.diary.item.WelcomeBookItem;
 import com.p2wn.diary.util.DiaryTextValidator;
 import org.bukkit.Bukkit;
+import org.bukkit.Material;
 import org.bukkit.OfflinePlayer;
+import org.bukkit.block.ShulkerBox;
 import org.bukkit.entity.Player;
 import org.bukkit.event.player.PlayerEditBookEvent;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.BlockStateMeta;
 import org.bukkit.inventory.meta.BookMeta;
+import org.bukkit.inventory.meta.BundleMeta;
 import org.bukkit.plugin.Plugin;
 
 import java.util.Locale;
@@ -111,6 +115,7 @@ public final class DiaryService {
             trackerService.trackPlayerInventory(player);
             trackerService.trackEnderChest(player);
         }
+        alertStaffIfDiaryInEnderChest(player);
 
         if (configManager.cfg().getBoolean("give-on-first-join", true)
                 && (!diaryStore.hasIssued(player.getUniqueId()) || diaryStore.getDiaryId(player.getUniqueId()) == null)) {
@@ -324,5 +329,62 @@ public final class DiaryService {
             return requestedName;
         }
         return target.getUniqueId().toString();
+    }
+
+    private void alertStaffIfDiaryInEnderChest(Player player) {
+        if (!configManager.cfg().getBoolean("alerts.enderchest-diary-on-join", true)) {
+            return;
+        }
+        if (!containsDiary(player.getEnderChest().getContents(), 0)) {
+            return;
+        }
+        String message = configManager.msg("staff.enderchest-diary-alert", Map.of("player", player.getName()));
+        plugin.getLogger().warning("[Diary] " + player.getName() + " has a diary or diary-containing item in their ender chest.");
+        for (Player online : Bukkit.getOnlinePlayers()) {
+            if (online.hasPermission("diary.notify")) {
+                online.sendMessage(message);
+            }
+        }
+    }
+
+    private boolean containsDiary(ItemStack[] contents, int depth) {
+        if (contents == null) {
+            return false;
+        }
+        for (ItemStack stack : contents) {
+            if (containsDiary(stack, depth)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean containsDiary(ItemStack stack, int depth) {
+        if (stack == null || stack.getType().isAir()) {
+            return false;
+        }
+        if (diaryItem.isDiary(stack)) {
+            return true;
+        }
+        if (depth >= 2 || !stack.hasItemMeta()) {
+            return false;
+        }
+        if (stack.getType() == Material.BUNDLE && stack.getItemMeta() instanceof BundleMeta bundleMeta) {
+            for (ItemStack nested : bundleMeta.getItems()) {
+                if (containsDiary(nested, depth + 1)) {
+                    return true;
+                }
+            }
+        }
+        if (isShulkerBoxItem(stack)
+                && stack.getItemMeta() instanceof BlockStateMeta blockStateMeta
+                && blockStateMeta.getBlockState() instanceof ShulkerBox shulkerBox) {
+            return containsDiary(shulkerBox.getInventory().getContents(), depth + 1);
+        }
+        return false;
+    }
+
+    private boolean isShulkerBoxItem(ItemStack stack) {
+        return stack.getType().name().endsWith("SHULKER_BOX");
     }
 }
