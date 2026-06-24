@@ -40,73 +40,73 @@ import java.util.Objects;
 
 public final class DiaryPlugin extends JavaPlugin {
 
-    private ConfigManager configManager;
-    private DiaryStore diaryStore;
-    private DiaryAnalyticsStore diaryAnalyticsStore;
-    private DiaryKeys diaryKeys;
-    private DiaryItem diaryItem;
-    private WelcomeBookItem welcomeBookItem;
-    private RestrictionService restrictionService;
-    private DuplicateWatcher duplicateWatcher;
-    private DeliveryService deliveryService;
-    private VoidWatcher voidWatcher;
-    private DiaryService diaryService;
-    private DiaryTrackerService diaryTrackerService;
-    private DiaryRestoreService diaryRestoreService;
-    private RestoreGuiListener restoreGuiListener;
+    private ConfigManager activeConfigManager;
+    private DiaryStore activeDiaryStore;
+    private DiaryAnalyticsStore activeDiaryAnalyticsStore;
+    private DiaryKeys activeDiaryKeys;
+    private DiaryItem activeDiaryItem;
+    private WelcomeBookItem activeWelcomeBookItem;
+    private RestrictionService activeRestrictionService;
+    private DuplicateWatcher activeDuplicateWatcher;
+    private DeliveryService activeDeliveryService;
+    private VoidWatcher activeVoidWatcher;
+    private DiaryService activeDiaryService;
+    private DiaryTrackerService activeDiaryTrackerService;
+    private DiaryRestoreService activeDiaryRestoreService;
+    private RestoreGuiListener activeRestoreGuiListener;
     private DiaryPlanHook planHook;
-    private PerformanceMonitor performanceMonitor;
+    private PerformanceMonitor activePerformanceMonitor;
 
     @Override
     public void onEnable() {
-        configManager = new ConfigManager(this);
-        configManager.load();
+        activeConfigManager = new ConfigManager(this);
+        activeConfigManager.load();
         logMigrationReport("startup");
-        performanceMonitor = new PerformanceMonitor(this);
-        performanceMonitor.reload();
+        activePerformanceMonitor = new PerformanceMonitor(this);
+        activePerformanceMonitor.reload();
 
-        diaryKeys = new DiaryKeys(this);
-        diaryStore = new DiaryStore(this);
-        diaryStore.setPerformanceMonitor(performanceMonitor);
-        diaryStore.load();
-        diaryStore.reloadAutosave();
-        diaryAnalyticsStore = new DiaryAnalyticsStore(this);
-        diaryAnalyticsStore.setPerformanceMonitor(performanceMonitor);
-        diaryAnalyticsStore.load();
-        diaryAnalyticsStore.reloadAutosave();
+        activeDiaryKeys = new DiaryKeys(this);
+        activeDiaryStore = new DiaryStore(this);
+        activeDiaryStore.setPerformanceMonitor(activePerformanceMonitor);
+        activeDiaryStore.load();
+        activeDiaryStore.reloadAutosave();
+        activeDiaryAnalyticsStore = new DiaryAnalyticsStore(this);
+        activeDiaryAnalyticsStore.setPerformanceMonitor(activePerformanceMonitor);
+        activeDiaryAnalyticsStore.load();
+        activeDiaryAnalyticsStore.reloadAutosave();
 
         handleWorldReset();
 
-        diaryItem = new DiaryItem(this, configManager, diaryStore, diaryKeys);
-        welcomeBookItem = new WelcomeBookItem(this);
-        diaryTrackerService = new DiaryTrackerService(diaryStore, diaryItem);
-        diaryTrackerService.setPerformanceMonitor(performanceMonitor);
-        duplicateWatcher = new DuplicateWatcher(this, configManager, diaryItem);
-        duplicateWatcher.setPerformanceMonitor(performanceMonitor);
-        deliveryService = new DeliveryService(this, diaryStore);
-        deliveryService.setPerformanceMonitor(performanceMonitor);
-        diaryService = new DiaryService(this, configManager, diaryStore, diaryItem, welcomeBookItem, deliveryService);
-        restrictionService = new RestrictionService(configManager, diaryItem);
-        voidWatcher = new VoidWatcher(this, configManager, diaryItem, deliveryService, duplicateWatcher);
-        voidWatcher.setPerformanceMonitor(performanceMonitor);
-        diaryRestoreService = new DiaryRestoreService(configManager, diaryStore, diaryItem, diaryService, deliveryService, diaryTrackerService);
-        restoreGuiListener = new RestoreGuiListener(this);
+        activeDiaryItem = new DiaryItem(this, activeConfigManager, activeDiaryStore, activeDiaryKeys);
+        activeWelcomeBookItem = new WelcomeBookItem(this);
+        activeDiaryTrackerService = new DiaryTrackerService(activeDiaryStore, activeDiaryItem);
+        activeDiaryTrackerService.setPerformanceMonitor(activePerformanceMonitor);
+        activeDuplicateWatcher = new DuplicateWatcher(this, activeConfigManager, activeDiaryItem);
+        activeDuplicateWatcher.setPerformanceMonitor(activePerformanceMonitor);
+        activeDeliveryService = new DeliveryService(this, activeDiaryStore);
+        activeDeliveryService.setPerformanceMonitor(activePerformanceMonitor);
+        activeDiaryService = new DiaryService(this, activeConfigManager, activeDiaryStore, activeDiaryItem, activeWelcomeBookItem, activeDeliveryService);
+        activeRestrictionService = new RestrictionService(activeConfigManager, activeDiaryItem);
+        activeVoidWatcher = new VoidWatcher(this, activeConfigManager, activeDiaryItem, activeDeliveryService, activeDuplicateWatcher);
+        activeVoidWatcher.setPerformanceMonitor(activePerformanceMonitor);
+        activeDiaryRestoreService = new DiaryRestoreService(activeConfigManager, activeDiaryStore, activeDiaryItem, activeDiaryService, activeDeliveryService, activeDiaryTrackerService);
+        activeRestoreGuiListener = new RestoreGuiListener(this);
 
-        diaryService.setDuplicateWatcher(duplicateWatcher);
-        diaryService.setTrackerService(diaryTrackerService);
-        diaryService.setRestoreService(diaryRestoreService);
-        diaryService.setAnalyticsStore(diaryAnalyticsStore);
-        deliveryService.setDiaryService(diaryService);
-        deliveryService.setTrackerService(diaryTrackerService);
-        deliveryService.setAnalyticsStore(diaryAnalyticsStore);
+        activeDiaryService.setDuplicateWatcher(activeDuplicateWatcher);
+        activeDiaryService.setTrackerService(activeDiaryTrackerService);
+        activeDiaryService.setRestoreService(activeDiaryRestoreService);
+        activeDiaryService.setAnalyticsStore(activeDiaryAnalyticsStore);
+        activeDeliveryService.setDiaryService(activeDiaryService);
+        activeDeliveryService.setTrackerService(activeDiaryTrackerService);
+        activeDeliveryService.setAnalyticsStore(activeDiaryAnalyticsStore);
 
         registerCommand();
         registerListeners();
         registerPlanIntegration();
 
-        duplicateWatcher.sweepStartup();
-        duplicateWatcher.reloadSettings();
-        deliveryService.reloadSettings();
+        activeDuplicateWatcher.sweepStartup();
+        activeDuplicateWatcher.reloadSettings();
+        activeDeliveryService.reloadSettings();
 
         getLogger().info("DiaryKeeper enabled.");
     }
@@ -117,106 +117,106 @@ public final class DiaryPlugin extends JavaPlugin {
             planHook.unregister();
             planHook = null;
         }
-        if (voidWatcher != null) {
-            voidWatcher.shutdown();
+        if (activeVoidWatcher != null) {
+            activeVoidWatcher.shutdown();
         }
-        if (deliveryService != null) {
-            deliveryService.shutdown();
+        if (activeDeliveryService != null) {
+            activeDeliveryService.shutdown();
         }
-        if (duplicateWatcher != null) {
-            duplicateWatcher.shutdown();
+        if (activeDuplicateWatcher != null) {
+            activeDuplicateWatcher.shutdown();
         }
-        if (diaryStore != null) {
-            diaryStore.shutdown();
+        if (activeDiaryStore != null) {
+            activeDiaryStore.shutdown();
         }
-        if (diaryAnalyticsStore != null) {
-            diaryAnalyticsStore.shutdown();
+        if (activeDiaryAnalyticsStore != null) {
+            activeDiaryAnalyticsStore.shutdown();
         }
-        if (performanceMonitor != null) {
-            performanceMonitor.shutdown();
+        if (activePerformanceMonitor != null) {
+            activePerformanceMonitor.shutdown();
         }
     }
 
     public void reloadPluginState() {
-        diaryStore.flushNowBlocking("reload");
-        diaryAnalyticsStore.flushNowBlocking("reload");
-        configManager.reload();
+        activeDiaryStore.flushNowBlocking("reload");
+        activeDiaryAnalyticsStore.flushNowBlocking("reload");
+        activeConfigManager.reload();
         logMigrationReport("reload");
-        performanceMonitor.reload();
-        diaryStore.reloadAutosave();
-        diaryAnalyticsStore.reloadAutosave();
-        diaryAnalyticsStore.reloadRetention();
-        diaryItem.clearNexoCache();
-        welcomeBookItem.reload();
-        deliveryService.reloadSettings();
-        voidWatcher.reloadSettings();
-        duplicateWatcher.reloadSettings();
-        duplicateWatcher.sweepStartup();
+        activePerformanceMonitor.reload();
+        activeDiaryStore.reloadAutosave();
+        activeDiaryAnalyticsStore.reloadAutosave();
+        activeDiaryAnalyticsStore.reloadRetention();
+        activeDiaryItem.clearNexoCache();
+        activeWelcomeBookItem.reload();
+        activeDeliveryService.reloadSettings();
+        activeVoidWatcher.reloadSettings();
+        activeDuplicateWatcher.reloadSettings();
+        activeDuplicateWatcher.sweepStartup();
         reloadPlanIntegration();
         getLogger().info("DiaryKeeper reload summary: configs loaded, migration actions="
-                + configManager.lastMigrationReport().actions().size()
-                + ", migration warnings=" + configManager.lastMigrationReport().warnings().size()
+                + activeConfigManager.lastMigrationReport().actions().size()
+                + ", migration warnings=" + activeConfigManager.lastMigrationReport().warnings().size()
                 + ", tasks restarted, duplicate scan queued.");
     }
 
     public ConfigManager configManager() {
-        return configManager;
+        return activeConfigManager;
     }
 
     public DiaryStore diaryStore() {
-        return diaryStore;
+        return activeDiaryStore;
     }
 
     public DiaryAnalyticsStore diaryAnalyticsStore() {
-        return diaryAnalyticsStore;
+        return activeDiaryAnalyticsStore;
     }
 
     public DiaryKeys diaryKeys() {
-        return diaryKeys;
+        return activeDiaryKeys;
     }
 
     public DiaryItem diaryItem() {
-        return diaryItem;
+        return activeDiaryItem;
     }
 
     public RestrictionService restrictionService() {
-        return restrictionService;
+        return activeRestrictionService;
     }
 
     public DuplicateWatcher duplicateWatcher() {
-        return duplicateWatcher;
+        return activeDuplicateWatcher;
     }
 
     public DeliveryService deliveryService() {
-        return deliveryService;
+        return activeDeliveryService;
     }
 
     public VoidWatcher voidWatcher() {
-        return voidWatcher;
+        return activeVoidWatcher;
     }
 
     public DiaryService diaryService() {
-        return diaryService;
+        return activeDiaryService;
     }
 
     public DiaryTrackerService diaryTrackerService() {
-        return diaryTrackerService;
+        return activeDiaryTrackerService;
     }
 
     public DiaryRestoreService diaryRestoreService() {
-        return diaryRestoreService;
+        return activeDiaryRestoreService;
     }
 
     public RestoreGuiListener restoreGuiListener() {
-        return restoreGuiListener;
+        return activeRestoreGuiListener;
     }
 
     public WelcomeBookItem welcomeBookItem() {
-        return welcomeBookItem;
+        return activeWelcomeBookItem;
     }
 
     public PerformanceMonitor performanceMonitor() {
-        return performanceMonitor;
+        return activePerformanceMonitor;
     }
 
     private void handleWorldReset() {
@@ -226,17 +226,17 @@ public final class DiaryPlugin extends JavaPlugin {
         }
 
         String currentWorldId = mainWorld.getUID().toString();
-        String previousWorldId = diaryStore.getLastWorldUid();
+        String previousWorldId = activeDiaryStore.getLastWorldUid();
         if (previousWorldId == null || !Objects.equals(previousWorldId, currentWorldId)) {
             getLogger().warning("Main world UUID changed or was not recorded; resetting diary issuance state and queued deliveries.");
-            diaryStore.resetAllPlayers();
-            diaryStore.setLastWorldUid(currentWorldId);
-            diaryStore.flushNowBlocking("world reset");
+            activeDiaryStore.resetAllPlayers();
+            activeDiaryStore.setLastWorldUid(currentWorldId);
+            activeDiaryStore.flushNowBlocking("world reset");
         }
     }
 
     private void logMigrationReport(String phase) {
-        ConfigManager.MigrationReport report = configManager.lastMigrationReport();
+        ConfigManager.MigrationReport report = activeConfigManager.lastMigrationReport();
         for (String action : report.actions()) {
             getLogger().info("Config migration (" + phase + "): " + action);
         }
@@ -272,11 +272,11 @@ public final class DiaryPlugin extends JavaPlugin {
         pluginManager.registerEvents(new ShulkerGuardListener(this), this);
         pluginManager.registerEvents(new ContainerGuardListener(this), this);
         pluginManager.registerEvents(new LumaGuildVaultGuardListener(this), this);
-        pluginManager.registerEvents(restoreGuiListener, this);
+        pluginManager.registerEvents(activeRestoreGuiListener, this);
     }
 
     private void registerPlanIntegration() {
-        if (!configManager.cfg().getBoolean("integrations.plan.enabled", true)) {
+        if (!activeConfigManager.cfg().getBoolean("integrations.plan.enabled", true)) {
             getLogger().fine("Plan integration is disabled in config.");
             return;
         }

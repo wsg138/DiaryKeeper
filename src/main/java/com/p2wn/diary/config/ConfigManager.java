@@ -31,7 +31,7 @@ public final class ConfigManager {
     private final Plugin plugin;
     private FileConfiguration config;
     private FileConfiguration messages;
-    private MigrationReport lastMigrationReport = new MigrationReport(List.of(), List.of());
+    private MigrationReport mostRecentMigrationReport = new MigrationReport(List.of(), List.of());
 
     public ConfigManager(Plugin plugin) {
         this.plugin = plugin;
@@ -39,7 +39,7 @@ public final class ConfigManager {
 
     public void load() {
         plugin.saveDefaultConfig();
-        lastMigrationReport = migrateFiles();
+        mostRecentMigrationReport = migrateFiles();
         plugin.reloadConfig();
         this.config = plugin.getConfig();
 
@@ -59,7 +59,7 @@ public final class ConfigManager {
     }
 
     public MigrationReport lastMigrationReport() {
-        return lastMigrationReport;
+        return mostRecentMigrationReport;
     }
 
     public String color(String input) {

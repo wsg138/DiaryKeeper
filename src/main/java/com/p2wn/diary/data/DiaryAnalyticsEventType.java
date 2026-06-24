@@ -12,13 +12,13 @@ public enum DiaryAnalyticsEventType {
     BLOCKED_CONTAINER("Blocked container"),
     PROTECTED_DESTRUCTION("Protected destruction");
 
-    private final String label;
+    private final String displayLabel;
 
     DiaryAnalyticsEventType(String label) {
-        this.label = label;
+        this.displayLabel = label;
     }
 
     public String label() {
-        return label;
+        return displayLabel;
     }
 }

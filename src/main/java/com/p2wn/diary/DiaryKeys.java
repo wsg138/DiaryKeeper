@@ -5,31 +5,31 @@ import org.bukkit.plugin.Plugin;
 
 public final class DiaryKeys {
 
-    private final NamespacedKey isDiary;
-    private final NamespacedKey ownerUuid;
-    private final NamespacedKey diaryId;
-    private final NamespacedKey lastDropper;
+    private final NamespacedKey isDiaryKey;
+    private final NamespacedKey ownerUuidKey;
+    private final NamespacedKey diaryIdKey;
+    private final NamespacedKey lastDropperKey;
 
     public DiaryKeys(Plugin plugin) {
-        this.isDiary = new NamespacedKey(plugin, "is_diary");
-        this.ownerUuid = new NamespacedKey(plugin, "owner_uuid");
-        this.diaryId = new NamespacedKey(plugin, "diary_id");
-        this.lastDropper = new NamespacedKey(plugin, "last_dropper");
+        this.isDiaryKey = new NamespacedKey(plugin, "is_diary");
+        this.ownerUuidKey = new NamespacedKey(plugin, "owner_uuid");
+        this.diaryIdKey = new NamespacedKey(plugin, "diary_id");
+        this.lastDropperKey = new NamespacedKey(plugin, "last_dropper");
     }
 
     public NamespacedKey isDiary() {
-        return isDiary;
+        return isDiaryKey;
     }
 
     public NamespacedKey ownerUuid() {
-        return ownerUuid;
+        return ownerUuidKey;
     }
 
     public NamespacedKey diaryId() {
-        return diaryId;
+        return diaryIdKey;
     }
 
     public NamespacedKey lastDropper() {
-        return lastDropper;
+        return lastDropperKey;
     }
 }

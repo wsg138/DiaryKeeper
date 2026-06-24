@@ -13,9 +13,9 @@ public final class PerformanceMonitor {
     private final AtomicLong inventoriesScanned = new AtomicLong();
     private final AtomicLong containersScanned = new AtomicLong();
     private final AtomicLong shulkersScanned = new AtomicLong();
-    private final AtomicLong duplicateScanQueueSize = new AtomicLong();
+    private final AtomicLong duplicateScanQueuedSize = new AtomicLong();
     private final AtomicLong duplicateScanRepairs = new AtomicLong();
-    private final AtomicLong voidTrackedItems = new AtomicLong();
+    private final AtomicLong voidTrackedItemCount = new AtomicLong();
     private final AtomicLong yamlSavesQueued = new AtomicLong();
     private final AtomicLong yamlSavesSkipped = new AtomicLong();
     private final AtomicLong yamlSavesRunning = new AtomicLong();
@@ -26,7 +26,7 @@ public final class PerformanceMonitor {
     private final AtomicLong analyticsSavesRunning = new AtomicLong();
     private final AtomicLong analyticsSavesFlushed = new AtomicLong();
     private final AtomicLong analyticsSavesFailed = new AtomicLong();
-    private final AtomicLong deliveryQueueSize = new AtomicLong();
+    private final AtomicLong deliveryQueuedSize = new AtomicLong();
     private BukkitTask task;
 
     public PerformanceMonitor(Plugin plugin) {
@@ -67,7 +67,7 @@ public final class PerformanceMonitor {
     }
 
     public void duplicateScanQueueSize(long size) {
-        duplicateScanQueueSize.set(size);
+        duplicateScanQueuedSize.set(size);
     }
 
     public void duplicateScanRepair() {
@@ -75,7 +75,7 @@ public final class PerformanceMonitor {
     }
 
     public void voidTrackedItems(long size) {
-        voidTrackedItems.set(size);
+        voidTrackedItemCount.set(size);
     }
 
     public void yamlSaveQueued() {
@@ -119,7 +119,7 @@ public final class PerformanceMonitor {
     }
 
     public void deliveryQueueSize(long size) {
-        deliveryQueueSize.set(size);
+        deliveryQueuedSize.set(size);
     }
 
     private void stop() {
@@ -135,9 +135,9 @@ public final class PerformanceMonitor {
                 + " inventories=" + inventoriesScanned.getAndSet(0)
                 + " containers=" + containersScanned.getAndSet(0)
                 + " shulkers=" + shulkersScanned.getAndSet(0)
-                + " duplicateQueue=" + duplicateScanQueueSize.get()
+                + " duplicateQueue=" + duplicateScanQueuedSize.get()
                 + " duplicateRepairs=" + duplicateScanRepairs.getAndSet(0)
-                + " voidTracked=" + voidTrackedItems.get()
+                + " voidTracked=" + voidTrackedItemCount.get()
                 + " yamlQueued=" + yamlSavesQueued.getAndSet(0)
                 + " yamlSkipped=" + yamlSavesSkipped.getAndSet(0)
                 + " yamlRunning=" + yamlSavesRunning.get()
@@ -148,6 +148,6 @@ public final class PerformanceMonitor {
                 + " analyticsRunning=" + analyticsSavesRunning.get()
                 + " analyticsFlushed=" + analyticsSavesFlushed.getAndSet(0)
                 + " analyticsFailed=" + analyticsSavesFailed.getAndSet(0)
-                + " deliveryQueue=" + deliveryQueueSize.get());
+                + " deliveryQueue=" + deliveryQueuedSize.get());
     }
 }
