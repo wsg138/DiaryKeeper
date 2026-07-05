@@ -33,10 +33,18 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 
+@SuppressWarnings({"PMD.UseConcurrentHashMap", "PMD.AvoidInstantiatingObjectsInLoops", "PMD.NullAssignment"})
 public final class DuplicateWatcher {
 
     private record Occurrence(String diaryId, String holderName, String whereTag, String coords) {}
     private record ChunkScanTarget(UUID worldId, int x, int z, int nextEntityIndex) {}
+    private static final String DUPLICATE_SCAN_ENABLED = "duplicate-scan.enabled";
+    private static final String DUPLICATE_SCAN_REPAIR_MODE = "duplicate-scan.repair-mode";
+    private static final String DUPLICATE_SCAN_REPORT_ONLY = "duplicate-scan.report-only";
+    private static final String DUPLICATES_STAFF_NOTIFY = "duplicates.staff-notify";
+    private static final String DIARY_NOTIFY_PERMISSION = "diary.notify";
+    private static final String UNKNOWN_COORDS = "?";
+    private static final int WARNING_MESSAGE_CAPACITY = 128;
 
     private final Plugin plugin;
     private final ConfigManager configManager;
@@ -64,7 +72,7 @@ public final class DuplicateWatcher {
 
     public void reloadSettings() {
         stopPeriodicTask();
-        if (!configManager.cfg().getBoolean("duplicate-scan.enabled", true)) {
+        if (!configManager.cfg().getBoolean(DUPLICATE_SCAN_ENABLED, true)) {
             stopScanTask();
             queuedPlayerScans.clear();
             queuedChunkScans.clear();
@@ -152,7 +160,7 @@ public final class DuplicateWatcher {
     }
 
     public void queueGlobalScan() {
-        if (!configManager.cfg().getBoolean("duplicate-scan.enabled", true)) {
+        if (!configManager.cfg().getBoolean(DUPLICATE_SCAN_ENABLED, true)) {
             return;
         }
 
@@ -219,14 +227,24 @@ public final class DuplicateWatcher {
             return;
         }
 
+        if (scanDiaryStack(stack, holderName, whereTag, coords, out)) {
+            return;
+        }
+        scanNestedStackContents(stack, holderName, whereTag, coords, out);
+    }
+
+    private boolean scanDiaryStack(ItemStack stack, String holderName, String whereTag, String coords, List<Occurrence> out) {
         if (diaryItem.isDiary(stack)) {
             String diaryId = diaryItem.getDiaryId(stack);
             if (diaryId != null) {
                 out.add(new Occurrence(diaryId, holderName, whereTag, coords));
             }
-            return;
+            return true;
         }
+        return false;
+    }
 
+    private void scanNestedStackContents(ItemStack stack, String holderName, String whereTag, String coords, List<Occurrence> out) {
         if (stack.getType() == Material.BUNDLE && stack.hasItemMeta() && stack.getItemMeta() instanceof BundleMeta bundleMeta) {
             for (ItemStack nested : bundleMeta.getItems()) {
                 scanItemStack(nested, holderName, "bundle->" + whereTag, coords, out);
@@ -271,7 +289,7 @@ public final class DuplicateWatcher {
     private record ChunkScanResult(List<Occurrence> occurrences, int nextEntityIndex, boolean incomplete) {}
 
     private void queueChunkScan(Chunk chunk) {
-        if (chunk == null || !configManager.cfg().getBoolean("duplicate-scan.enabled", true)) {
+        if (chunk == null || !configManager.cfg().getBoolean(DUPLICATE_SCAN_ENABLED, true)) {
             return;
         }
         String key = chunk.getWorld().getUID() + ":" + chunk.getX() + ":" + chunk.getZ();
@@ -292,7 +310,7 @@ public final class DuplicateWatcher {
     }
 
     private void ensureScanTask() {
-        if (scanTask != null || !configManager.cfg().getBoolean("duplicate-scan.enabled", true)) {
+        if (scanTask != null || !configManager.cfg().getBoolean(DUPLICATE_SCAN_ENABLED, true)) {
             return;
         }
         scanTask = plugin.getServer().getScheduler().runTaskTimer(plugin, this::scanTick, 1L, 1L);
@@ -303,56 +321,71 @@ public final class DuplicateWatcher {
         int maxChunks = Math.max(1, configManager.cfg().getInt("duplicate-scan.max-chunks-per-tick", 2));
         int maxEntities = Math.max(1, configManager.cfg().getInt("duplicate-scan.max-entities-per-tick", 80));
 
-        for (int i = 0; i < maxPlayers && !queuedPlayerScans.isEmpty(); i++) {
-            UUID playerId = queuedPlayerScans.removeFirst();
-            Player player = Bukkit.getPlayer(playerId);
-            if (player != null && player.isOnline()) {
-                List<Occurrence> occurrences;
-                if (isRepairEnabled()) {
-                    refreshPlayerSnapshot(player);
-                    occurrences = playerSnapshots.getOrDefault(playerId, List.of());
-                } else {
-                    occurrences = scanPlayerOccurrences(player);
-                }
-                if (isRepairEnabled()) {
-                    if (performanceMonitor != null) {
-                        performanceMonitor.duplicateScanRepair();
-                    }
-                }
-                if (configManager.cfg().getBoolean("duplicates.warn-on-startup", true)) {
-                    warnForIds(occurrences, "staggered-player-scan");
-                }
-            }
-        }
-
-        for (int i = 0; i < maxChunks && !queuedChunkScans.isEmpty(); i++) {
-            ChunkScanTarget target = queuedChunkScans.removeFirst();
-            String key = target.worldId() + ":" + target.x() + ":" + target.z();
-            queuedChunkKeys.remove(key);
-            org.bukkit.World world = Bukkit.getWorld(target.worldId());
-            if (world == null || !world.isChunkLoaded(target.x(), target.z())) {
-                continue;
-            }
-            Chunk chunk = world.getChunkAt(target.x(), target.z());
-            ChunkScanResult result = scanChunkItems(chunk, target.nextEntityIndex(), maxEntities);
-            if (configManager.cfg().getBoolean("duplicates.warn-on-chunk-load", true)) {
-                warnForIds(result.occurrences(), "staggered-chunk-scan " + target.x() + "," + target.z());
-            }
-            if (isRepairEnabled() && !result.occurrences().isEmpty()) {
-                if (performanceMonitor != null) {
-                    performanceMonitor.duplicateScanRepair();
-                }
-            }
-            if (result.incomplete()) {
-                ChunkScanTarget resumed = new ChunkScanTarget(target.worldId(), target.x(), target.z(), result.nextEntityIndex());
-                queuedChunkKeys.put(key, resumed);
-                queuedChunkScans.addLast(resumed);
-            }
-        }
+        scanQueuedPlayers(maxPlayers);
+        scanQueuedChunks(maxChunks, maxEntities);
 
         updateQueueSizeCounter();
         if (queuedPlayerScans.isEmpty() && queuedChunkScans.isEmpty()) {
             stopScanTask();
+        }
+    }
+
+    private void scanQueuedPlayers(int maxPlayers) {
+        for (int i = 0; i < maxPlayers && !queuedPlayerScans.isEmpty(); i++) {
+            scanQueuedPlayer(queuedPlayerScans.removeFirst());
+        }
+    }
+
+    private void scanQueuedPlayer(UUID playerId) {
+        Player player = Bukkit.getPlayer(playerId);
+        if (player == null || !player.isOnline()) {
+            return;
+        }
+        List<Occurrence> occurrences = collectPlayerOccurrences(player, playerId);
+        if (configManager.cfg().getBoolean("duplicates.warn-on-startup", true)) {
+            warnForIds(occurrences, "staggered-player-scan");
+        }
+    }
+
+    private List<Occurrence> collectPlayerOccurrences(Player player, UUID playerId) {
+        if (!isRepairEnabled()) {
+            return scanPlayerOccurrences(player);
+        }
+        refreshPlayerSnapshot(player);
+        markDuplicateScanRepair();
+        return playerSnapshots.getOrDefault(playerId, List.of());
+    }
+
+    private void scanQueuedChunks(int maxChunks, int maxEntities) {
+        for (int i = 0; i < maxChunks && !queuedChunkScans.isEmpty(); i++) {
+            scanQueuedChunk(queuedChunkScans.removeFirst(), maxEntities);
+        }
+    }
+
+    private void scanQueuedChunk(ChunkScanTarget target, int maxEntities) {
+        String key = target.worldId() + ":" + target.x() + ":" + target.z();
+        queuedChunkKeys.remove(key);
+        org.bukkit.World world = Bukkit.getWorld(target.worldId());
+        if (world == null || !world.isChunkLoaded(target.x(), target.z())) {
+            return;
+        }
+        ChunkScanResult result = scanChunkItems(world.getChunkAt(target.x(), target.z()), target.nextEntityIndex(), maxEntities);
+        if (configManager.cfg().getBoolean("duplicates.warn-on-chunk-load", true)) {
+            warnForIds(result.occurrences(), "staggered-chunk-scan " + target.x() + "," + target.z());
+        }
+        if (isRepairEnabled() && !result.occurrences().isEmpty()) {
+            markDuplicateScanRepair();
+        }
+        if (result.incomplete()) {
+            ChunkScanTarget resumed = new ChunkScanTarget(target.worldId(), target.x(), target.z(), result.nextEntityIndex());
+            queuedChunkKeys.put(key, resumed);
+            queuedChunkScans.addLast(resumed);
+        }
+    }
+
+    private void markDuplicateScanRepair() {
+        if (performanceMonitor != null) {
+            performanceMonitor.duplicateScanRepair();
         }
     }
 
@@ -377,8 +410,8 @@ public final class DuplicateWatcher {
     }
 
     private boolean isRepairEnabled() {
-        return configManager.cfg().getBoolean("duplicate-scan.repair-mode", true)
-                && !configManager.cfg().getBoolean("duplicate-scan.report-only", false);
+        return configManager.cfg().getBoolean(DUPLICATE_SCAN_REPAIR_MODE, true)
+                && !configManager.cfg().getBoolean(DUPLICATE_SCAN_REPORT_ONLY, false);
     }
 
     private void warnForIds(List<Occurrence> triggerOccurrences, String scopeTag) {
@@ -402,9 +435,9 @@ public final class DuplicateWatcher {
             Bukkit.getPluginManager().callEvent(new DiaryDuplicateWarningEvent(occurrence.diaryId(), matches.size(), scopeTag, message));
             plugin.getLogger().warning(message);
 
-            if (configManager.cfg().getBoolean("duplicates.staff-notify", true)) {
+            if (configManager.cfg().getBoolean(DUPLICATES_STAFF_NOTIFY, true)) {
                 for (Player player : Bukkit.getOnlinePlayers()) {
-                    if (player.hasPermission("diary.notify")) {
+                    if (player.hasPermission(DIARY_NOTIFY_PERMISSION)) {
                         player.sendMessage(configManager.color("&e" + message));
                     }
                 }
@@ -442,7 +475,7 @@ public final class DuplicateWatcher {
         String shortId = diaryId.substring(0, Math.min(8, diaryId.length()));
         int maxListed = Math.max(1, configManager.cfg().getInt("duplicates.max-listed-occurrences", 5));
 
-        StringBuilder builder = new StringBuilder();
+        StringBuilder builder = new StringBuilder(WARNING_MESSAGE_CAPACITY);
         builder.append("[Diary] Duplicate detected (id ")
                 .append(shortId)
                 .append(") in ")
@@ -456,7 +489,7 @@ public final class DuplicateWatcher {
                     .append(occurrence.coords())
                     .append(" [")
                     .append(occurrence.whereTag())
-                    .append("]");
+                    .append(']');
             if (i < Math.min(occurrences.size(), maxListed) - 1) {
                 builder.append(", ");
             }
@@ -470,7 +503,7 @@ public final class DuplicateWatcher {
 
     private String coordsOf(Location location) {
         if (location == null || location.getWorld() == null) {
-            return "?";
+            return UNKNOWN_COORDS;
         }
         return location.getWorld().getName() + ":" + location.getBlockX() + "," + location.getBlockY() + "," + location.getBlockZ();
     }
