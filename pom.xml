@@ -36,7 +36,7 @@
         <dependency>
             <groupId>com.github.plan-player-analytics</groupId>
             <artifactId>Plan</artifactId>
-            <version>5.7.3306</version>
+            <version>5.7.3558</version>
             <scope>provided</scope>
         </dependency>
     </dependencies>
