@@ -35,7 +35,7 @@ public final class EnderChestGuardListener implements Listener {
         // than placing its contents. Block that interaction while an ender chest is
         // open so a diary cannot be unpacked directly into its slots.
         if (isDiaryContainingBundle(event.getCurrentItem())
-                && (!topSlot || event.getClick().isRightClick())) {
+                && event.getClick().isRightClick()) {
             event.setCancelled(true);
             return;
         }
