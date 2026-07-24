@@ -31,6 +31,15 @@ public final class EnderChestGuardListener implements Listener {
         boolean topSlot = event.getClickedInventory() != null
                 && event.getClickedInventory().equals(event.getView().getTopInventory());
 
+        // Unpacking a bundle is reported as interacting with the bundle itself rather
+        // than placing its contents. Block that interaction while an ender chest is
+        // open so a diary cannot be unpacked directly into its slots.
+        if (isDiaryContainingBundle(event.getCurrentItem())
+                && (!topSlot || event.getClick().isRightClick())) {
+            event.setCancelled(true);
+            return;
+        }
+
         if (topSlot
                 && event.getClick() == ClickType.SWAP_OFFHAND
                 && plugin.restrictionService().isDiaryOrNestedDiary(event.getWhoClicked().getInventory().getItemInOffHand())) {
@@ -82,5 +91,11 @@ public final class EnderChestGuardListener implements Listener {
         if (touchesTop && plugin.restrictionService().isDiaryOrNestedDiary(event.getOldCursor())) {
             event.setCancelled(true);
         }
+    }
+
+    private boolean isDiaryContainingBundle(ItemStack item) {
+        return item != null
+                && item.getType() == org.bukkit.Material.BUNDLE
+                && plugin.restrictionService().isDiaryOrNestedDiary(item);
     }
 }
