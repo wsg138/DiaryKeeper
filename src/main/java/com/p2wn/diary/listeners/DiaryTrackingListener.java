@@ -100,6 +100,7 @@ public final class DiaryTrackingListener implements Listener {
         if (!plugin.restrictionService().isDiaryOrNestedDiary(event.getItem().getItemStack())) {
             return;
         }
+        plugin.diaryTrackerService().markGroundItemInactive(event.getItem().getUniqueId());
         schedulePlayerScan(player);
     }
 

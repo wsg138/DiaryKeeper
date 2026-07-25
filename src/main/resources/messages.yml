@@ -1,4 +1,4 @@
-config-version: 3
+config-version: 4
 prefix: "&6[Diary] &r"
 
 non-owner-edit: "&cYou can read this diary, but only the owner can edit it."
@@ -30,6 +30,11 @@ admin:
   status-issued: "&eIssued: &f{issued}"
   status-diary-id: "&eDiary ID: &f{id}"
   status-queued: "&eQueued Deliveries: &f{count}"
+  status-active-copies: "&eKnown Active Copies: &f{count}"
+  status-recent-locations: "&eRecent Locations: &f{count}"
+  status-pending-purges: "&ePending Purges: &f{count}"
+  status-last-location: "&eLast Tracked Location: &f{location}"
+  status-snapshot-time: "&eLast Snapshot Time: &f{time}"
 
 find:
   usage: "&cUsage: /diary find <player|uuid|diaryId>"
@@ -39,11 +44,22 @@ find:
   result-location: "&eLast Known Location: &f{location}"
 
 restore:
-  usage: "&cUsage: /diary restore <player|uuid|diaryId>"
+  usage: "&cUsage: /diary restore <player|uuid|diaryId> [owner|admin|duplicate]"
   not-found: "&cNo restorable diary snapshot was found for that query."
-  player-only-confirm: "&cIf a tracked copy already exists, restore confirmation must be done in-game."
+  console-explicit: "&cConsole must use an explicit restore mode: owner or duplicate."
+  admin-player-only: "&cOnly an in-game admin can use the admin restore destination."
   gui-opened: "&eRestore confirmation opened."
-  replace-failed: "&cThe tracked copy could not be safely removed right now. Load the area or choose a second-copy restore."
-  replace-success: "&aThe tracked copy was removed or queued for removal, and the diary was restored."
-  spawn-second-success: "&aA second copy of the diary was restored."
-  direct-success: "&aThe diary was restored from the saved snapshot."
+  duplicate-started: "&cWarning: an additional diary copy was intentionally restored without purging existing copies."
+
+purge:
+  usage: "&cUsage: /diary purge <player|diaryId|status|cancel|resume|list>"
+  status-usage: "&cUsage: /diary purge status <operationId|player|diaryId>"
+  control-usage: "&cUsage: /diary purge <cancel|resume> <operationId>"
+  not-found: "&cNo matching purge operation was found."
+  none: "&eNo purge operations are recorded."
+  start-failed: "&cThe purge operation could not be started."
+  started: "&aPurge operation &e{operation} &astarted. State: &e{state}&a, pending players: &e{players}&a, pending chunks: &e{chunks}&a."
+  control-success: "&aPurge operation updated."
+  control-failed: "&cThat purge operation cannot be updated in its current state."
+  restore-delivered: "&aThe restored diary was delivered to your inventory."
+  restore-queued: "&eYour restored diary is queued because it could not be delivered now."

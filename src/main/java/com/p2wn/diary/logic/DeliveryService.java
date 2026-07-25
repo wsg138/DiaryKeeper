@@ -151,6 +151,7 @@ public final class DeliveryService {
                 diaryStore.flushIfDirty();
                 if (trackerService != null) {
                     trackerService.trackPlayerInventory(player);
+                    trackerService.refreshQueuedDeliveries(playerId, player.getName());
                 }
                 diaryService.refreshOwnedDiaries(player);
                 updateDeliveryQueueSize();

@@ -26,7 +26,7 @@ public final class ConfigManager {
         }
     }
 
-    private static final int CURRENT_CONFIG_VERSION = 3;
+    private static final int CURRENT_CONFIG_VERSION = 4;
 
     private final Plugin plugin;
     private FileConfiguration config;

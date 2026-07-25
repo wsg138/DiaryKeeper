@@ -3,6 +3,7 @@ package com.p2wn.diary.logic;
 import com.p2wn.diary.data.DiaryLocationRecord;
 import com.p2wn.diary.data.DiaryLocationType;
 import com.p2wn.diary.data.DiaryStore;
+import com.p2wn.diary.data.PendingDelivery;
 import com.p2wn.diary.item.DiaryItem;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
@@ -25,6 +26,8 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.UUID;
 
 public final class DiaryTrackerService {
@@ -133,7 +136,7 @@ public final class DiaryTrackerService {
     }
 
     public void trackQueuedDelivery(UUID playerId, String playerName, ItemStack item) {
-        scanItemStack(item, locationRecord(
+        DiaryLocationRecord base = locationRecord(
                 DiaryLocationType.DELIVERY_QUEUE,
                 "queued for delivery to " + playerName,
                 playerId,
@@ -143,7 +146,22 @@ public final class DiaryTrackerService {
                 null,
                 null,
                 List.of()
-        ));
+        );
+        scanItemStack(item, withSlot(base, Math.max(0, diaryStore.getPendingDeliveryCount(playerId) - 1)));
+    }
+
+    public void refreshQueuedDeliveries(UUID playerId, String playerName) {
+        Set<String> observed = new HashSet<>();
+        List<PendingDelivery> deliveries = diaryStore.getPendingDeliveries(playerId, Integer.MAX_VALUE);
+        for (int slot = 0; slot < deliveries.size(); slot++) {
+            DiaryLocationRecord base = locationRecord(
+                    DiaryLocationType.DELIVERY_QUEUE,
+                    "queued for delivery to " + playerName,
+                    playerId, playerName, null, null, null, null, List.of());
+            scanItemStack(deliveries.get(slot).item(), withSlot(base, slot), observed);
+        }
+        diaryStore.markTrackedScopeInactive(DiaryLocationType.DELIVERY_QUEUE, playerId,
+                null, null, null, null, observed);
     }
 
     public void trackSnapshotOnly(ItemStack item) {
@@ -157,17 +175,29 @@ public final class DiaryTrackerService {
         var existing = diaryStore.getTrackedDiary(diaryId);
         if (existing != null && existing.lastKnownLocation() != null) {
             UUID ownerId = diaryItem.getOwner(item);
-            diaryStore.updateTrackedDiary(diaryId, ownerId, resolveOwnerName(ownerId), item.clone(), existing.lastKnownLocation());
+            diaryStore.updateTrackedSnapshot(diaryId, ownerId, resolveOwnerName(ownerId), item.clone());
         }
     }
 
     private void scanInventory(Inventory inventory, DiaryLocationRecord baseLocation) {
-        for (ItemStack stack : inventory.getContents()) {
-            scanItemStack(stack, baseLocation);
+        Set<String> observed = new HashSet<>();
+        ItemStack[] contents = inventory.getContents();
+        for (int slot = 0; slot < contents.length; slot++) {
+            scanItemStack(contents[slot], withSlot(baseLocation, slot), observed);
         }
+        diaryStore.markTrackedScopeInactive(baseLocation.type(), baseLocation.holderUuid(),
+                baseLocation.worldUuid(), baseLocation.x(), baseLocation.y(), baseLocation.z(), observed);
+    }
+
+    public void markGroundItemInactive(UUID entityUuid) {
+        diaryStore.markEntityLocationInactive(entityUuid);
     }
 
     private void scanItemStack(ItemStack stack, DiaryLocationRecord currentLocation) {
+        scanItemStack(stack, currentLocation, null);
+    }
+
+    private void scanItemStack(ItemStack stack, DiaryLocationRecord currentLocation, Set<String> observed) {
         if (stack == null || stack.getType().isAir()) {
             return;
         }
@@ -177,14 +207,17 @@ public final class DiaryTrackerService {
             UUID ownerId = diaryItem.getOwner(stack);
             if (diaryId != null) {
                 diaryStore.updateTrackedDiary(diaryId, ownerId, resolveOwnerName(ownerId), stack.clone(), currentLocation);
+                if (observed != null) {
+                    observed.add(currentLocation.identityKey());
+                }
             }
             return;
         }
 
         if (stack.getType() == Material.BUNDLE && stack.hasItemMeta() && stack.getItemMeta() instanceof BundleMeta bundleMeta) {
-            DiaryLocationRecord nestedLocation = withNested(currentLocation, "inside a bundle");
-            for (ItemStack nested : bundleMeta.getItems()) {
-                scanItemStack(nested, nestedLocation);
+            List<ItemStack> items = bundleMeta.getItems();
+            for (int index = 0; index < items.size(); index++) {
+                scanItemStack(items.get(index), withNested(currentLocation, "inside bundle slot " + index), observed);
             }
             return;
         }
@@ -193,11 +226,19 @@ public final class DiaryTrackerService {
             if (performanceMonitor != null) {
                 performanceMonitor.shulkerScanned();
             }
-            DiaryLocationRecord nestedLocation = withNested(currentLocation, "inside a shulker");
-            for (ItemStack nested : shulkerBox.getInventory().getContents()) {
-                scanItemStack(nested, nestedLocation);
+            ItemStack[] items = shulkerBox.getInventory().getContents();
+            for (int index = 0; index < items.length; index++) {
+                scanItemStack(items[index], withNested(currentLocation, "inside shulker slot " + index), observed);
             }
         }
+    }
+
+    private DiaryLocationRecord withSlot(DiaryLocationRecord base, int slot) {
+        String scope = base.type().name().toLowerCase(Locale.ROOT);
+        return new DiaryLocationRecord(base.type(), base.description(), base.holderUuid(), base.holderName(),
+                base.worldUuid(), base.worldName(), base.x(), base.y(), base.z(), base.containerType(),
+                base.entityUuid(), base.nestedPath(), scope, slot,
+                Instant.now().getEpochSecond(), Instant.now().getEpochSecond(), true);
     }
 
     private DiaryLocationRecord withNested(DiaryLocationRecord base, String nestedSegment) {
@@ -208,6 +249,7 @@ public final class DiaryTrackerService {
                 nestedDescription(path, tailDescription(base.description())),
                 base.holderUuid(),
                 base.holderName(),
+                base.worldUuid(),
                 base.worldName(),
                 base.x(),
                 base.y(),
@@ -215,7 +257,11 @@ public final class DiaryTrackerService {
                 base.containerType(),
                 base.entityUuid(),
                 path,
-                Instant.now().getEpochSecond()
+                base.inventoryScope(),
+                base.slot(),
+                Instant.now().getEpochSecond(),
+                Instant.now().getEpochSecond(),
+                true
         );
     }
 
@@ -247,6 +293,7 @@ public final class DiaryTrackerService {
                 description,
                 holderUuid,
                 holderName,
+                world == null ? null : world.getUID(),
                 world == null ? null : world.getName(),
                 location == null ? null : location.getBlockX(),
                 location == null ? null : location.getBlockY(),
@@ -254,7 +301,11 @@ public final class DiaryTrackerService {
                 containerType,
                 entityUuid,
                 nestedPath,
-                Instant.now().getEpochSecond()
+                type.name().toLowerCase(Locale.ROOT),
+                null,
+                Instant.now().getEpochSecond(),
+                Instant.now().getEpochSecond(),
+                true
         );
     }
 

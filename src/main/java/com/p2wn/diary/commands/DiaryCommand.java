@@ -2,6 +2,8 @@ package com.p2wn.diary.commands;
 
 import com.p2wn.diary.DiaryPlugin;
 import com.p2wn.diary.data.TrackedDiaryRecord;
+import com.p2wn.diary.data.PurgeDestination;
+import com.p2wn.diary.data.PurgeOperation;
 import com.p2wn.diary.logic.DiaryService;
 import org.bukkit.Bukkit;
 import org.bukkit.OfflinePlayer;
@@ -47,6 +49,7 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
             case "status" -> handleStatus(sender, args);
             case "find" -> handleFind(sender, args);
             case "restore" -> handleRestore(sender, args);
+            case "purge" -> handlePurge(sender, args);
             case "importwelcome" -> handleImportWelcome(sender);
             case "scan" -> handleScan(sender, args);
             case "repair" -> handleRepair(sender);
@@ -63,10 +66,16 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
             return List.of();
         }
         if (args.length == 1) {
-            return partial(List.of("reload", "issue", "status", "find", "restore", "scan", "repair", "importwelcome"), args[0]);
+            return partial(List.of("reload", "issue", "status", "find", "restore", "purge", "scan", "repair", "importwelcome"), args[0]);
         }
         if (args.length == 2 && "scan".equalsIgnoreCase(args[0])) {
             return partial(List.of("duplicates", "locations"), args[1]);
+        }
+        if (args.length == 2 && "purge".equalsIgnoreCase(args[0])) {
+            return partial(List.of("status", "cancel", "resume", "list"), args[1]);
+        }
+        if (args.length == 3 && "restore".equalsIgnoreCase(args[0])) {
+            return partial(List.of("owner", "admin", "duplicate"), args[2]);
         }
         if (args.length == 2 && List.of("issue", "status", "find", "restore").contains(args[0].toLowerCase(Locale.ROOT))) {
             List<String> onlineNames = new ArrayList<>();
@@ -148,9 +157,9 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
             return true;
         }
 
-        if (record.lastKnownLocation() != null) {
+        if (args.length == 2) {
             if (!(sender instanceof Player player)) {
-                sender.sendMessage(plugin.configManager().msg("restore.player-only-confirm"));
+                sender.sendMessage(plugin.configManager().msg("restore.console-explicit"));
                 return true;
             }
             plugin.restoreGuiListener().openRestoreGui(player, record);
@@ -158,9 +167,127 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
             return true;
         }
 
-        plugin.diaryRestoreService().restoreDiaryToOwner(record, true);
-        sender.sendMessage(plugin.configManager().msg("restore.direct-success"));
+        String mode = args[2].toLowerCase(Locale.ROOT);
+        if ("duplicate".equals(mode)) {
+            plugin.diaryPurgeService().restoreDuplicate(record, sender instanceof Player player ? player : null);
+            sender.sendMessage(plugin.configManager().msg("restore.duplicate-started"));
+            return true;
+        }
+        if ("admin".equals(mode) && !(sender instanceof Player)) {
+            sender.sendMessage(plugin.configManager().msg("restore.admin-player-only"));
+            return true;
+        }
+        if (!"owner".equals(mode) && !"admin".equals(mode)) {
+            sender.sendMessage(plugin.configManager().msg("restore.usage"));
+            return true;
+        }
+        PurgeDestination destination = "owner".equals(mode) ? PurgeDestination.OWNER : PurgeDestination.ADMIN;
+        PurgeOperation operation = plugin.diaryPurgeService().begin(record, destination,
+                sender instanceof Player player ? player : null);
+        sendOperationStarted(sender, operation);
         return true;
+    }
+
+    private boolean handlePurge(CommandSender sender, String[] args) {
+        if (args.length < 2) {
+            sender.sendMessage(plugin.configManager().msg("purge.usage"));
+            return true;
+        }
+        return switch (args[1].toLowerCase(Locale.ROOT)) {
+            case "list" -> {
+                List<PurgeOperation> operations = plugin.diaryStore().getPurgeOperations();
+                if (operations.isEmpty()) {
+                    sender.sendMessage(plugin.configManager().msg("purge.none"));
+                }
+                operations.stream()
+                        .sorted((left, right) -> Long.compare(right.startedAt(), left.startedAt()))
+                        .limit(20)
+                        .forEach(operation -> sender.sendMessage(shortOperation(operation)));
+                yield true;
+            }
+            case "status" -> {
+                if (args.length < 3) {
+                    sender.sendMessage(plugin.configManager().msg("purge.status-usage"));
+                    yield true;
+                }
+                PurgeOperation operation = plugin.diaryPurgeService().find(args[2]);
+                if (operation == null) {
+                    sender.sendMessage(plugin.configManager().msg("purge.not-found"));
+                } else {
+                    sendOperationStatus(sender, operation);
+                }
+                yield true;
+            }
+            case "cancel", "resume" -> {
+                if (args.length < 3) {
+                    sender.sendMessage(plugin.configManager().msg("purge.control-usage"));
+                    yield true;
+                }
+                UUID operationId;
+                try {
+                    operationId = UUID.fromString(args[2]);
+                } catch (IllegalArgumentException ex) {
+                    sender.sendMessage(plugin.configManager().msg("purge.not-found"));
+                    yield true;
+                }
+                boolean changed = "cancel".equalsIgnoreCase(args[1])
+                        ? plugin.diaryPurgeService().cancel(operationId, sender.getName())
+                        : plugin.diaryPurgeService().resume(operationId, sender.getName());
+                sender.sendMessage(plugin.configManager().msg(changed ? "purge.control-success" : "purge.control-failed"));
+                yield true;
+            }
+            default -> {
+                String diaryId = resolveDiaryId(args[1]);
+                TrackedDiaryRecord record = diaryId == null ? null : plugin.diaryRestoreService().getTrackedDiary(diaryId);
+                if (record == null || record.snapshot() == null) {
+                    sender.sendMessage(plugin.configManager().msg("restore.not-found"));
+                    yield true;
+                }
+                PurgeOperation operation = plugin.diaryPurgeService().begin(record, PurgeDestination.NONE,
+                        sender instanceof Player player ? player : null);
+                sendOperationStarted(sender, operation);
+                yield true;
+            }
+        };
+    }
+
+    private void sendOperationStarted(CommandSender sender, PurgeOperation operation) {
+        if (operation == null) {
+            sender.sendMessage(plugin.configManager().msg("purge.start-failed"));
+            return;
+        }
+        sender.sendMessage(plugin.configManager().msg("purge.started", java.util.Map.of(
+                "operation", operation.operationId().toString(),
+                "state", operation.state().name(),
+                "players", Integer.toString(operation.pendingPlayers().size()),
+                "chunks", Integer.toString(operation.pendingChunks())
+        )));
+    }
+
+    private void sendOperationStatus(CommandSender sender, PurgeOperation operation) {
+        OfflinePlayer owner = operation.ownerUuid() == null ? null : Bukkit.getOfflinePlayer(operation.ownerUuid());
+        sender.sendMessage("§eOperation: §f" + operation.operationId());
+        sender.sendMessage("§eDiary ID: §f" + operation.diaryId());
+        sender.sendMessage("§eOwner: §f" + (owner == null ? "unknown" :
+                owner.getName() == null ? owner.getUniqueId() : owner.getName()));
+        sender.sendMessage("§eDestination: §f" + operation.destination());
+        sender.sendMessage("§eState: §f" + operation.state());
+        sender.sendMessage("§eCopies removed: §f" + operation.totalRemoved() + " " + operation.removedByLocation());
+        sender.sendMessage("§eOnline inventories scanned: §f" + operation.onlinePlayersScanned());
+        sender.sendMessage("§eOffline players pending: §f" + operation.pendingPlayers().size());
+        sender.sendMessage("§eLoaded/known chunks scanned: §f" + operation.loadedChunksScanned());
+        sender.sendMessage("§eKnown chunks pending: §f" + operation.pendingChunks());
+        sender.sendMessage("§ePending deliveries removed: §f" + operation.pendingDeliveriesRemoved());
+        sender.sendMessage("§eErrors: §f" + operation.errors().size()
+                + (operation.errors().isEmpty() ? "" : " " + operation.errors()));
+        sender.sendMessage("§eReplacement restored: §f" + operation.restorationOccurred());
+        sender.sendMessage("§eReplacement holder: §f" +
+                (operation.replacementHolder() == null ? "none" : operation.replacementHolder()));
+    }
+
+    private String shortOperation(PurgeOperation operation) {
+        return "§e" + operation.operationId() + " §f" + operation.diaryId()
+                + " §7" + operation.state() + " removed=" + operation.totalRemoved();
     }
 
     private OfflinePlayer resolveOfflinePlayer(String input) {
@@ -188,6 +315,8 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(plugin.configManager().msg("admin.usage-status"));
         sender.sendMessage(plugin.configManager().msg("admin.usage-find"));
         sender.sendMessage(plugin.configManager().msg("admin.usage-restore"));
+        sender.sendMessage("/diary purge <player|diaryId>");
+        sender.sendMessage("/diary purge <status|cancel|resume|list> [operation]");
         sender.sendMessage("/diary scan <duplicates|locations>");
         sender.sendMessage("/diary repair");
         sender.sendMessage("/diary importwelcome");
@@ -229,8 +358,8 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
     }
 
     private boolean handleRepair(CommandSender sender) {
-        plugin.duplicateWatcher().queueGlobalScan();
-        sender.sendMessage("Queued a staggered diary repair scan.");
+        plugin.duplicateWatcher().queueRepairScan();
+        sender.sendMessage("Queued a staggered duplicate scan; confirmed duplicates will start purge-and-owner-restore operations.");
         return true;
     }
 }

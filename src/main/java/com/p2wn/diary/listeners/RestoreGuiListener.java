@@ -1,98 +1,126 @@
 package com.p2wn.diary.listeners;
 
 import com.p2wn.diary.DiaryPlugin;
+import com.p2wn.diary.data.PurgeDestination;
+import com.p2wn.diary.data.PurgeOperation;
 import com.p2wn.diary.data.TrackedDiaryRecord;
-import com.p2wn.diary.logic.DiaryRestoreService;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.inventory.InventoryClickEvent;
-import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
-import java.util.UUID;
 
 public final class RestoreGuiListener implements Listener {
 
-    private static final String TITLE = "Restore Diary";
+    private enum Action { OWNER, ADMIN, DUPLICATE }
 
     private final DiaryPlugin plugin;
-    private final Map<UUID, RestoreSession> sessions = new HashMap<>();
 
     public RestoreGuiListener(DiaryPlugin plugin) {
         this.plugin = plugin;
     }
 
     public void openRestoreGui(Player player, TrackedDiaryRecord record) {
-        Inventory inventory = Bukkit.createInventory(new Holder(player.getUniqueId()), 9, TITLE);
-        inventory.setItem(2, createButton(Material.LIME_WOOL, "Replace Existing", List.of(
-                "Attempt to remove the tracked copy first.",
-                "If it cannot be safely removed, restore is cancelled."
+        Inventory inventory = Bukkit.createInventory(new Holder(record, null, false), 9, "Restore Diary");
+        inventory.setItem(0, button(Material.LIME_WOOL, "Purge and Return to Owner", List.of(
+                "Remove every discoverable copy.",
+                "Offline players and known chunks may remain pending.",
+                "Restore only after purge work succeeds."
         )));
-        inventory.setItem(6, createButton(Material.RED_WOOL, "Spawn Second Copy", List.of(
-                "Keep the tracked copy where it is.",
-                "Restore another copy to the owner."
+        inventory.setItem(2, button(Material.YELLOW_WOOL, "Purge and Give to Me", List.of(
+                "The original owner does not change.",
+                "Full inventory delivery is queued.",
+                "Restore waits for purge completion."
         )));
-        inventory.setItem(4, createButton(Material.BOOK, "Tracked Copy", List.of(
-                record.lastKnownLocation() == null ? "No current location recorded." : record.lastKnownLocation().description()
+        inventory.setItem(4, button(Material.RED_WOOL, "Spawn Additional Copy", List.of(
+                "WARNING: intentionally creates another copy.",
+                "No existing copy is removed."
         )));
-
-        sessions.put(player.getUniqueId(), new RestoreSession(record));
+        inventory.setItem(5, button(Material.BOOK, "Tracked Diary", List.of(
+                "Owner: " + record.ownerName(),
+                "ID: " + record.diaryId()
+        )));
+        inventory.setItem(6, button(Material.COMPASS, "Known Locations", List.of(
+                "Active: " + record.activeLocationCount(),
+                "Recent/history: " + record.locations().size()
+        )));
+        inventory.setItem(7, button(Material.HOPPER, "Pending Deliveries", List.of(
+                Integer.toString(plugin.diaryStore().getPendingDeliveryCount(record.ownerUuid()))
+        )));
+        inventory.setItem(8, button(Material.BARRIER, "Cancel", List.of("Close without changes.")));
         player.openInventory(inventory);
     }
 
     @EventHandler
     public void onClick(InventoryClickEvent event) {
-        if (!(event.getWhoClicked() instanceof Player player)) {
-            return;
-        }
-        if (!(event.getInventory().getHolder() instanceof Holder)) {
+        if (!(event.getWhoClicked() instanceof Player player)
+                || !(event.getInventory().getHolder() instanceof Holder holder)) {
             return;
         }
         event.setCancelled(true);
+        if (holder.confirmation()) {
+            handleConfirmation(player, holder, event.getRawSlot());
+            return;
+        }
+        Action action = switch (event.getRawSlot()) {
+            case 0 -> Action.OWNER;
+            case 2 -> Action.ADMIN;
+            case 4 -> Action.DUPLICATE;
+            default -> null;
+        };
+        if (action == null) {
+            if (event.getRawSlot() == 8) {
+                player.closeInventory();
+            }
+            return;
+        }
+        openConfirmation(player, holder.record(), action);
+    }
 
-        RestoreSession session = sessions.remove(player.getUniqueId());
-        if (session == null) {
+    private void openConfirmation(Player player, TrackedDiaryRecord record, Action action) {
+        Inventory inventory = Bukkit.createInventory(new Holder(record, action, true), 9, "Confirm Diary Action");
+        String warning = action == Action.DUPLICATE
+                ? "This intentionally creates another copy."
+                : "This starts persistent purge work.";
+        inventory.setItem(3, button(Material.LIME_WOOL, "Confirm", List.of(warning, "This action is audited.")));
+        inventory.setItem(5, button(Material.BARRIER, "Go Back", List.of("Return to restore options.")));
+        player.openInventory(inventory);
+    }
+
+    private void handleConfirmation(Player player, Holder holder, int slot) {
+        if (slot == 5) {
+            openRestoreGui(player, holder.record());
+            return;
+        }
+        if (slot != 3 || holder.action() == null) {
+            return;
+        }
+        if (holder.action() == Action.DUPLICATE) {
+            plugin.diaryPurgeService().restoreDuplicate(holder.record(), player);
+            player.sendMessage(plugin.configManager().msg("restore.duplicate-started"));
             player.closeInventory();
             return;
         }
-
-        if (event.getRawSlot() == 2) {
-            DiaryRestoreService.RemovalResult result = plugin.diaryRestoreService().removeCurrentTrackedCopy(session.record());
-            if (result == DiaryRestoreService.RemovalResult.FAILED) {
-                player.sendMessage(plugin.configManager().msg("restore.replace-failed"));
-                player.closeInventory();
-                return;
-            }
-            plugin.diaryRestoreService().restoreDiaryToOwner(session.record(), true);
-            player.sendMessage(plugin.configManager().msg("restore.replace-success"));
-        } else if (event.getRawSlot() == 6) {
-            plugin.diaryRestoreService().restoreDiaryToOwner(session.record(), true);
-            player.sendMessage(plugin.configManager().msg("restore.spawn-second-success"));
-        }
-
+        PurgeDestination destination = holder.action() == Action.OWNER
+                ? PurgeDestination.OWNER : PurgeDestination.ADMIN;
+        PurgeOperation operation = plugin.diaryPurgeService().begin(holder.record(), destination, player);
+        player.sendMessage(plugin.configManager().msg("purge.started", java.util.Map.of(
+                "operation", operation.operationId().toString(),
+                "state", operation.state().name(),
+                "players", Integer.toString(operation.pendingPlayers().size()),
+                "chunks", Integer.toString(operation.pendingChunks())
+        )));
         player.closeInventory();
     }
 
-    @EventHandler
-    public void onClose(InventoryCloseEvent event) {
-        if (!(event.getPlayer() instanceof Player player)) {
-            return;
-        }
-        if (event.getInventory().getHolder() instanceof Holder) {
-            sessions.remove(player.getUniqueId());
-        }
-    }
-
-    private ItemStack createButton(Material material, String name, List<String> lore) {
+    private ItemStack button(Material material, String name, List<String> lore) {
         ItemStack stack = new ItemStack(material);
         ItemMeta meta = stack.getItemMeta();
         meta.setDisplayName(name);
@@ -101,9 +129,7 @@ public final class RestoreGuiListener implements Listener {
         return stack;
     }
 
-    private record RestoreSession(TrackedDiaryRecord record) {}
-
-    private record Holder(UUID playerId) implements InventoryHolder {
+    private record Holder(TrackedDiaryRecord record, Action action, boolean confirmation) implements InventoryHolder {
         @Override
         public Inventory getInventory() {
             return null;

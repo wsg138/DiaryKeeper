@@ -25,6 +25,7 @@ import com.p2wn.diary.listeners.RestoreGuiListener;
 import com.p2wn.diary.listeners.ShulkerGuardListener;
 import com.p2wn.diary.logic.DeliveryService;
 import com.p2wn.diary.logic.DiaryRestoreService;
+import com.p2wn.diary.logic.DiaryPurgeService;
 import com.p2wn.diary.logic.DiaryService;
 import com.p2wn.diary.logic.DiaryTrackerService;
 import com.p2wn.diary.logic.DuplicateWatcher;
@@ -53,6 +54,7 @@ public final class DiaryPlugin extends JavaPlugin {
     private DiaryService activeDiaryService;
     private DiaryTrackerService activeDiaryTrackerService;
     private DiaryRestoreService activeDiaryRestoreService;
+    private DiaryPurgeService activeDiaryPurgeService;
     private RestoreGuiListener activeRestoreGuiListener;
     private DiaryPlanHook planHook;
     private PerformanceMonitor activePerformanceMonitor;
@@ -90,6 +92,7 @@ public final class DiaryPlugin extends JavaPlugin {
         activeVoidWatcher = new VoidWatcher(this, activeConfigManager, activeDiaryItem, activeDeliveryService, activeDuplicateWatcher);
         activeVoidWatcher.setPerformanceMonitor(activePerformanceMonitor);
         activeDiaryRestoreService = new DiaryRestoreService(activeConfigManager, activeDiaryStore, activeDiaryItem, activeDiaryService, activeDeliveryService, activeDiaryTrackerService);
+        activeDiaryPurgeService = new DiaryPurgeService(this);
         activeRestoreGuiListener = new RestoreGuiListener(this);
 
         activeDiaryService.setDuplicateWatcher(activeDuplicateWatcher);
@@ -107,6 +110,7 @@ public final class DiaryPlugin extends JavaPlugin {
         activeDuplicateWatcher.sweepStartup();
         activeDuplicateWatcher.reloadSettings();
         activeDeliveryService.reloadSettings();
+        activeDiaryPurgeService.start();
 
         getLogger().info("DiaryKeeper enabled.");
     }
@@ -125,6 +129,9 @@ public final class DiaryPlugin extends JavaPlugin {
         }
         if (activeDuplicateWatcher != null) {
             activeDuplicateWatcher.shutdown();
+        }
+        if (activeDiaryPurgeService != null) {
+            activeDiaryPurgeService.shutdown();
         }
         if (activeDiaryStore != null) {
             activeDiaryStore.shutdown();
@@ -152,6 +159,7 @@ public final class DiaryPlugin extends JavaPlugin {
         activeVoidWatcher.reloadSettings();
         activeDuplicateWatcher.reloadSettings();
         activeDuplicateWatcher.sweepStartup();
+        activeDiaryPurgeService.start();
         reloadPlanIntegration();
         getLogger().info("DiaryKeeper reload summary: configs loaded, migration actions="
                 + activeConfigManager.lastMigrationReport().actions().size()
@@ -205,6 +213,10 @@ public final class DiaryPlugin extends JavaPlugin {
 
     public DiaryRestoreService diaryRestoreService() {
         return activeDiaryRestoreService;
+    }
+
+    public DiaryPurgeService diaryPurgeService() {
+        return activeDiaryPurgeService;
     }
 
     public RestoreGuiListener restoreGuiListener() {

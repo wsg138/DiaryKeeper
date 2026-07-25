@@ -1,6 +1,9 @@
 package com.p2wn.diary.logic;
 
 import com.p2wn.diary.config.ConfigManager;
+import com.p2wn.diary.DiaryPlugin;
+import com.p2wn.diary.data.PurgeDestination;
+import com.p2wn.diary.data.TrackedDiaryRecord;
 import com.p2wn.diary.events.DiaryDuplicateWarningEvent;
 import com.p2wn.diary.item.DiaryItem;
 import org.bukkit.Bukkit;
@@ -52,13 +55,14 @@ public final class DuplicateWatcher {
 
     private final Map<String, Long> lastWarnAt = new HashMap<>();
     private final Map<UUID, List<Occurrence>> playerSnapshots = new HashMap<>();
-    private final Map<UUID, Occurrence> groundItemSnapshots = new HashMap<>();
+    private final Map<UUID, List<Occurrence>> groundItemSnapshots = new HashMap<>();
     private final Deque<UUID> queuedPlayerScans = new ArrayDeque<>();
     private final Deque<ChunkScanTarget> queuedChunkScans = new ArrayDeque<>();
     private final Map<String, ChunkScanTarget> queuedChunkKeys = new HashMap<>();
     private BukkitTask scanTask;
     private BukkitTask periodicTask;
     private PerformanceMonitor performanceMonitor;
+    private boolean purgeDuplicatesOnCurrentScan;
 
     public DuplicateWatcher(Plugin plugin, ConfigManager configManager, DiaryItem diaryItem) {
         this.plugin = plugin;
@@ -112,14 +116,16 @@ public final class DuplicateWatcher {
     }
 
     public void refreshGroundItemSnapshot(Item item) {
-        if (item == null || item.isDead() || !diaryItem.isDiary(item.getItemStack())) {
+        if (item == null || item.isDead()) {
             return;
         }
-        String diaryId = diaryItem.getDiaryId(item.getItemStack());
-        if (diaryId == null) {
-            return;
+        List<Occurrence> occurrences = new ArrayList<>();
+        scanItemStack(item.getItemStack(), "ground", "item", coordsOf(item.getLocation()), occurrences);
+        if (occurrences.isEmpty()) {
+            groundItemSnapshots.remove(item.getUniqueId());
+        } else {
+            groundItemSnapshots.put(item.getUniqueId(), occurrences);
         }
-        groundItemSnapshots.put(item.getUniqueId(), new Occurrence(diaryId, "ground", "item", coordsOf(item.getLocation())));
     }
 
     public void removeGroundItemSnapshot(UUID itemId) {
@@ -174,6 +180,11 @@ public final class DuplicateWatcher {
         }
         ensureScanTask();
         updateQueueSizeCounter();
+    }
+
+    public void queueRepairScan() {
+        purgeDuplicatesOnCurrentScan = true;
+        queueGlobalScan();
     }
 
     public void queuePlayerScan(UUID playerId) {
@@ -271,16 +282,17 @@ public final class DuplicateWatcher {
         for (; index < entities.length && processed < maxEntities; index++) {
             org.bukkit.entity.Entity entity = entities[index];
             processed++;
-            if (entity instanceof Item item && diaryItem.isDiary(item.getItemStack())) {
-                String diaryId = diaryItem.getDiaryId(item.getItemStack());
-                if (diaryId == null) {
-                    continue;
-                }
-                Occurrence occurrence = new Occurrence(diaryId, "ground", "item", coordsOf(item.getLocation()));
+            if (entity instanceof Item item) {
+                List<Occurrence> itemOccurrences = new ArrayList<>();
+                scanItemStack(item.getItemStack(), "ground", "item", coordsOf(item.getLocation()), itemOccurrences);
                 if (isRepairEnabled()) {
-                    groundItemSnapshots.put(item.getUniqueId(), occurrence);
+                    if (itemOccurrences.isEmpty()) {
+                        groundItemSnapshots.remove(item.getUniqueId());
+                    } else {
+                        groundItemSnapshots.put(item.getUniqueId(), itemOccurrences);
+                    }
                 }
-                occurrences.add(occurrence);
+                occurrences.addAll(itemOccurrences);
             }
         }
         return new ChunkScanResult(occurrences, index, index < entities.length);
@@ -326,6 +338,7 @@ public final class DuplicateWatcher {
 
         updateQueueSizeCounter();
         if (queuedPlayerScans.isEmpty() && queuedChunkScans.isEmpty()) {
+            purgeDuplicatesOnCurrentScan = false;
             stopScanTask();
         }
     }
@@ -420,6 +433,15 @@ public final class DuplicateWatcher {
         }
 
         Map<String, List<Occurrence>> global = buildGlobalOccurrenceMap();
+        Map<Occurrence, Integer> triggerCounts = new HashMap<>();
+        for (Occurrence trigger : triggerOccurrences) {
+            List<Occurrence> matches = global.computeIfAbsent(trigger.diaryId(), ignored -> new ArrayList<>());
+            int triggerCount = triggerCounts.merge(trigger, 1, Integer::sum);
+            long existingCount = matches.stream().filter(trigger::equals).count();
+            if (existingCount < triggerCount) {
+                matches.add(trigger);
+            }
+        }
         Map<String, Occurrence> firstByDiaryId = new LinkedHashMap<>();
         for (Occurrence occurrence : triggerOccurrences) {
             firstByDiaryId.putIfAbsent(occurrence.diaryId(), occurrence);
@@ -427,7 +449,23 @@ public final class DuplicateWatcher {
 
         for (Occurrence occurrence : firstByDiaryId.values()) {
             List<Occurrence> matches = global.getOrDefault(occurrence.diaryId(), List.of());
-            if (matches.size() <= 1 || !shouldWarn(occurrence.diaryId())) {
+            if (plugin instanceof DiaryPlugin diaryPlugin && !matches.isEmpty()) {
+                diaryPlugin.diaryPurgeService().onObservedCopy(
+                        occurrence.diaryId(), scopeTag + " " + occurrence.coords(), matches.size());
+            }
+            if (matches.size() <= 1) {
+                continue;
+            }
+
+            if (purgeDuplicatesOnCurrentScan && plugin instanceof DiaryPlugin diaryPlugin) {
+                TrackedDiaryRecord record = diaryPlugin.diaryStore().getTrackedDiary(occurrence.diaryId());
+                if (record != null && record.snapshot() != null
+                        && diaryPlugin.diaryStore().getPurgeOperationsForDiary(occurrence.diaryId()).stream()
+                        .noneMatch(operation -> !operation.terminal())) {
+                    diaryPlugin.diaryPurgeService().begin(record, PurgeDestination.OWNER, null);
+                }
+            }
+            if (!shouldWarn(occurrence.diaryId())) {
                 continue;
             }
 
@@ -450,7 +488,9 @@ public final class DuplicateWatcher {
         for (List<Occurrence> occurrences : playerSnapshots.values()) {
             addOccurrences(grouped, occurrences);
         }
-        addOccurrences(grouped, groundItemSnapshots.values());
+        for (List<Occurrence> occurrences : groundItemSnapshots.values()) {
+            addOccurrences(grouped, occurrences);
+        }
         return grouped;
     }
 

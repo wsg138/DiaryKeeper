@@ -63,6 +63,7 @@ public final class ItemProtectionListener implements Listener {
 
     @EventHandler
     public void onChunkLoad(ChunkLoadEvent event) {
+        plugin.diaryPurgeService().onChunkLoad(event.getChunk());
         plugin.duplicateWatcher().onChunkLoad(event.getChunk());
     }
 

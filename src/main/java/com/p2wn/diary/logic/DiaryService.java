@@ -40,7 +40,9 @@ public final class DiaryService {
 
     public record IssueResult(IssueResultType type, UUID playerId, String playerName) {}
 
-    public record DiaryStatus(boolean issued, String diaryId, long issuedAt, int queuedDeliveries) {}
+    public record DiaryStatus(boolean issued, String diaryId, long issuedAt, int queuedDeliveries,
+                              long activeCopies, int recentLocations, int pendingPurges,
+                              String lastLocation, long snapshotUpdatedAt) {}
 
     private final ConfigManager configManager;
     private final DiaryStore diaryStore;
@@ -170,11 +172,20 @@ public final class DiaryService {
 
     public DiaryStatus getStatus(OfflinePlayer target) {
         UUID playerId = target.getUniqueId();
+        String diaryId = diaryStore.getDiaryId(playerId);
+        var tracked = diaryId == null ? null : diaryStore.getTrackedDiary(diaryId);
         return new DiaryStatus(
                 diaryStore.hasIssued(playerId),
-                diaryStore.getDiaryId(playerId),
+                diaryId,
                 diaryStore.getIssuedAt(playerId),
-                diaryStore.getPendingDeliveryCount(playerId)
+                diaryStore.getPendingDeliveryCount(playerId),
+                tracked == null ? 0L : tracked.activeLocationCount(),
+                tracked == null ? 0 : tracked.locations().size(),
+                diaryId == null ? 0 : (int) diaryStore.getPurgeOperationsForDiary(diaryId).stream()
+                        .filter(operation -> !operation.terminal()).count(),
+                tracked == null || tracked.lastKnownLocation() == null
+                        ? "unknown" : tracked.lastKnownLocation().description(),
+                tracked == null ? 0L : tracked.snapshotUpdatedAt()
         );
     }
 
@@ -291,7 +302,12 @@ public final class DiaryService {
                 configManager.msg("admin.status-player", Map.of("player", targetName)),
                 configManager.msg("admin.status-issued", Map.of("issued", Boolean.toString(status.issued()).toLowerCase(Locale.ROOT))),
                 configManager.msg("admin.status-diary-id", Map.of("id", status.diaryId() == null ? "none" : status.diaryId())),
-                configManager.msg("admin.status-queued", Map.of("count", Integer.toString(status.queuedDeliveries())))
+                configManager.msg("admin.status-queued", Map.of("count", Integer.toString(status.queuedDeliveries()))),
+                configManager.msg("admin.status-active-copies", Map.of("count", Long.toString(status.activeCopies()))),
+                configManager.msg("admin.status-recent-locations", Map.of("count", Integer.toString(status.recentLocations()))),
+                configManager.msg("admin.status-pending-purges", Map.of("count", Integer.toString(status.pendingPurges()))),
+                configManager.msg("admin.status-last-location", Map.of("location", status.lastLocation())),
+                configManager.msg("admin.status-snapshot-time", Map.of("time", Long.toString(status.snapshotUpdatedAt())))
         );
     }
 

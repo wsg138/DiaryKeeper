@@ -44,6 +44,8 @@ public final class DiaryStore {
         private String ownerName;
         private ItemStack snapshot;
         private DiaryLocationRecord location;
+        private final List<DiaryLocationRecord> locations = new ArrayList<>();
+        private long snapshotUpdatedAt;
     }
 
     private final Plugin plugin;
@@ -52,6 +54,10 @@ public final class DiaryStore {
     private final Object fileSaveLock = new Object();
     private final Map<UUID, PlayerRecord> records = new HashMap<>();
     private final Map<String, DiaryRecordState> diaryRecords = new HashMap<>();
+    private final Map<UUID, PurgeOperation> purgeOperations = new HashMap<>();
+    private final Map<UUID, Set<String>> locationDiaryIdsByHolder = new HashMap<>();
+    private final Map<String, Set<String>> locationDiaryIdsByChunk = new HashMap<>();
+    private final Set<String> diaryIdsWithActiveLocations = new HashSet<>();
 
     private String lastWorldUid;
     private boolean dirty;
@@ -69,6 +75,7 @@ public final class DiaryStore {
     public void load() {
         records.clear();
         diaryRecords.clear();
+        purgeOperations.clear();
         lastWorldUid = null;
         dirty = false;
 
@@ -79,6 +86,8 @@ public final class DiaryStore {
         loadPendingDeliveries(data);
         loadPendingRemovals(data.getConfigurationSection("pendingRemovals"));
         loadTrackedDiaries(data.getConfigurationSection("trackedDiaries"));
+        rebuildLocationIndexes();
+        loadPurgeOperations(data.getConfigurationSection("purgeOperations"));
         loadLegacyVoidQueue(data.getConfigurationSection("voidQueue"));
     }
 
@@ -111,6 +120,7 @@ public final class DiaryStore {
     public void resetAllPlayers() {
         records.clear();
         diaryRecords.clear();
+        purgeOperations.clear();
         markDirty();
     }
 
@@ -197,6 +207,25 @@ public final class DiaryStore {
         return removed;
     }
 
+    public int removeAllPendingDeliveriesByDiaryId(String diaryId) {
+        int removed = 0;
+        for (PlayerRecord record : records.values()) {
+            int before = record.pendingDeliveries.size();
+            record.pendingDeliveries.removeIf(delivery -> diaryId.equals(extractDiaryId(delivery.item())));
+            removed += before - record.pendingDeliveries.size();
+        }
+        if (removed > 0) {
+            markDirty();
+        }
+        return removed;
+    }
+
+    public boolean hasPendingDelivery(UUID playerId, String diaryId) {
+        PlayerRecord record = records.get(playerId);
+        return record != null && record.pendingDeliveries.stream()
+                .anyMatch(delivery -> diaryId.equals(extractDiaryId(delivery.item())));
+    }
+
     public int getPendingDeliveryCount(UUID playerId) {
         PlayerRecord record = records.get(playerId);
         return record == null ? 0 : record.pendingDeliveries.size();
@@ -253,8 +282,128 @@ public final class DiaryStore {
             state.ownerName = ownerName;
         }
         state.snapshot = snapshot.clone();
+        state.snapshotUpdatedAt = Instant.now().getEpochSecond();
         state.location = location;
+        if (location != null) {
+            int existingIndex = -1;
+            for (int i = 0; i < state.locations.size(); i++) {
+                if (state.locations.get(i).identityKey().equals(location.identityKey())) {
+                    existingIndex = i;
+                    break;
+                }
+            }
+            if (existingIndex >= 0) {
+                state.locations.set(existingIndex, state.locations.get(existingIndex).observedAgain(location));
+            } else {
+                state.locations.add(location);
+            }
+        }
+        rebuildLocationIndexes();
         markDirty();
+    }
+
+    public void updateTrackedSnapshot(String diaryId, UUID ownerUuid, String ownerName, ItemStack snapshot) {
+        if (diaryId == null || snapshot == null) {
+            return;
+        }
+        DiaryRecordState state = diaryRecords.computeIfAbsent(diaryId, ignored -> new DiaryRecordState());
+        state.ownerUuid = ownerUuid;
+        if (ownerName != null && !ownerName.isBlank()) {
+            state.ownerName = ownerName;
+        }
+        state.snapshot = snapshot.clone();
+        state.snapshotUpdatedAt = Instant.now().getEpochSecond();
+        markDirty();
+    }
+
+    public void markTrackedScopeInactive(DiaryLocationType type, UUID holderUuid, UUID worldUuid,
+                                         Integer x, Integer y, Integer z, Set<String> observedKeys) {
+        long now = Instant.now().getEpochSecond();
+        boolean changed = false;
+        for (DiaryRecordState state : diaryRecords.values()) {
+            for (int i = 0; i < state.locations.size(); i++) {
+                DiaryLocationRecord location = state.locations.get(i);
+                boolean sameScope = location.type() == type
+                        && Objects.equals(location.holderUuid(), holderUuid)
+                        && Objects.equals(location.worldUuid(), worldUuid)
+                        && Objects.equals(location.x(), x)
+                        && Objects.equals(location.y(), y)
+                        && Objects.equals(location.z(), z);
+                if (sameScope && location.active() && !observedKeys.contains(location.identityKey())) {
+                    state.locations.set(i, location.inactive(now));
+                    changed = true;
+                }
+            }
+        }
+        if (changed) {
+            rebuildLocationIndexes();
+            markDirty();
+        }
+    }
+
+    public void markEntityLocationInactive(UUID entityUuid) {
+        if (entityUuid == null) {
+            return;
+        }
+        long now = Instant.now().getEpochSecond();
+        boolean changed = false;
+        for (DiaryRecordState state : diaryRecords.values()) {
+            for (int i = 0; i < state.locations.size(); i++) {
+                DiaryLocationRecord location = state.locations.get(i);
+                if (location.active() && entityUuid.equals(location.entityUuid())) {
+                    state.locations.set(i, location.inactive(now));
+                    changed = true;
+                }
+            }
+        }
+        if (changed) {
+            rebuildLocationIndexes();
+            markDirty();
+        }
+    }
+
+    public void markAllLocationsInactive(String diaryId) {
+        DiaryRecordState state = diaryRecords.get(diaryId);
+        if (state == null) {
+            return;
+        }
+        long now = Instant.now().getEpochSecond();
+        boolean changed = false;
+        for (int i = 0; i < state.locations.size(); i++) {
+            DiaryLocationRecord location = state.locations.get(i);
+            if (location.active()) {
+                state.locations.set(i, location.inactive(now));
+                changed = true;
+            }
+        }
+        if (changed) {
+            rebuildLocationIndexes();
+            markDirty();
+        }
+    }
+
+    private void rebuildLocationIndexes() {
+        locationDiaryIdsByHolder.clear();
+        locationDiaryIdsByChunk.clear();
+        diaryIdsWithActiveLocations.clear();
+        for (Map.Entry<String, DiaryRecordState> entry : diaryRecords.entrySet()) {
+            String diaryId = entry.getKey();
+            for (DiaryLocationRecord location : entry.getValue().locations) {
+                if (location.holderUuid() != null) {
+                    locationDiaryIdsByHolder.computeIfAbsent(location.holderUuid(), ignored -> new HashSet<>())
+                            .add(diaryId);
+                }
+                if ((location.worldUuid() != null || location.worldName() != null)
+                        && location.x() != null && location.z() != null) {
+                    String world = location.worldUuid() == null ? location.worldName() : location.worldUuid().toString();
+                    String chunkKey = world + ":" + (location.x() >> 4) + ":" + (location.z() >> 4);
+                    locationDiaryIdsByChunk.computeIfAbsent(chunkKey, ignored -> new HashSet<>()).add(diaryId);
+                }
+                if (location.active()) {
+                    diaryIdsWithActiveLocations.add(diaryId);
+                }
+            }
+        }
     }
 
     public TrackedDiaryRecord getTrackedDiary(String diaryId) {
@@ -262,7 +411,45 @@ public final class DiaryStore {
         if (state == null) {
             return null;
         }
-        return new TrackedDiaryRecord(diaryId, state.ownerUuid, state.ownerName, state.snapshot == null ? null : state.snapshot.clone(), state.location);
+        return new TrackedDiaryRecord(diaryId, state.ownerUuid, state.ownerName,
+                state.snapshot == null ? null : state.snapshot.clone(), state.location,
+                state.locations, state.snapshotUpdatedAt);
+    }
+
+    public List<DiaryLocationRecord> getLocations(String diaryId, boolean activeOnly) {
+        DiaryRecordState state = diaryRecords.get(diaryId);
+        if (state == null) {
+            return List.of();
+        }
+        return state.locations.stream().filter(location -> !activeOnly || location.active()).toList();
+    }
+
+    public void addPurgeOperation(PurgeOperation operation) {
+        purgeOperations.put(operation.operationId(), operation);
+        markDirty();
+    }
+
+    public PurgeOperation getPurgeOperation(UUID operationId) {
+        return purgeOperations.get(operationId);
+    }
+
+    public List<PurgeOperation> getPurgeOperations() {
+        return List.copyOf(purgeOperations.values());
+    }
+
+    public List<PurgeOperation> getPurgeOperationsForDiary(String diaryId) {
+        return purgeOperations.values().stream()
+                .filter(operation -> operation.diaryId().equals(diaryId))
+                .sorted((left, right) -> Long.compare(right.startedAt(), left.startedAt()))
+                .toList();
+    }
+
+    public List<PurgeOperation> getActivePurgeOperations() {
+        return purgeOperations.values().stream().filter(operation -> !operation.terminal()).toList();
+    }
+
+    public void purgeOperationChanged() {
+        markDirty();
     }
 
     public String findDiaryIdByOwner(UUID ownerUuid) {
@@ -431,10 +618,19 @@ public final class DiaryStore {
             data.set(basePath + ".ownerUuid", state.ownerUuid == null ? null : state.ownerUuid.toString());
             data.set(basePath + ".ownerName", state.ownerName);
             data.set(basePath + ".snapshotBase64", state.snapshot == null ? null : ItemIO.toBase64(state.snapshot));
+            data.set(basePath + ".snapshotUpdatedAt", state.snapshotUpdatedAt);
             if (state.location != null) {
                 ConfigurationSection locationSection = data.createSection(basePath + ".location");
                 state.location.writeTo(locationSection);
             }
+            for (int i = 0; i < state.locations.size(); i++) {
+                ConfigurationSection locationSection = data.createSection(basePath + ".locations." + i);
+                state.locations.get(i).writeTo(locationSection);
+            }
+        }
+
+        for (PurgeOperation operation : purgeOperations.values()) {
+            writePurgeOperation(data, operation);
         }
 
         return new SaveSnapshot(data, currentDirtyVersion());
@@ -615,6 +811,7 @@ public final class DiaryStore {
             state.ownerUuid = parseUuid(section.getString("ownerUuid"));
             state.ownerName = section.getString("ownerName");
             state.snapshot = readItem(section, "snapshotBase64", "snapshot");
+            state.snapshotUpdatedAt = section.getLong("snapshotUpdatedAt", 0L);
             ConfigurationSection locationSection = section.getConfigurationSection("location");
             if (locationSection != null) {
                 state.location = DiaryLocationRecord.readFrom(locationSection);
@@ -622,7 +819,152 @@ public final class DiaryStore {
                     plugin.getLogger().warning("Unknown tracked diary location type at trackedDiaries." + diaryId + ".location.type: " + locationSection.getString("type"));
                 }
             }
+            ConfigurationSection locationsSection = section.getConfigurationSection("locations");
+            if (locationsSection != null) {
+                List<String> keys = new ArrayList<>(locationsSection.getKeys(false));
+                keys.sort(String::compareTo);
+                for (String key : keys) {
+                    ConfigurationSection entry = locationsSection.getConfigurationSection(key);
+                    if (entry != null) {
+                        state.locations.add(DiaryLocationRecord.readFrom(entry));
+                    }
+                }
+            }
+            if (state.locations.isEmpty() && state.location != null) {
+                state.locations.add(state.location);
+            }
             diaryRecords.put(diaryId, state);
+        }
+    }
+
+    private void writePurgeOperation(FileConfiguration data, PurgeOperation operation) throws IOException {
+        String base = "purgeOperations." + operation.operationId();
+        data.set(base + ".diaryId", operation.diaryId());
+        data.set(base + ".ownerUuid", operation.ownerUuid() == null ? null : operation.ownerUuid().toString());
+        data.set(base + ".adminUuid", operation.adminUuid() == null ? null : operation.adminUuid().toString());
+        data.set(base + ".destination", operation.destination().name());
+        data.set(base + ".state", operation.state().name());
+        data.set(base + ".startedAt", operation.startedAt());
+        data.set(base + ".completedAt", operation.completedAt());
+        data.set(base + ".snapshotBase64", operation.snapshot() == null ? null : ItemIO.toBase64(operation.snapshot()));
+        data.set(base + ".onlinePlayersScanned", operation.onlinePlayersScanned());
+        data.set(base + ".loadedChunksScanned", operation.loadedChunksScanned());
+        data.set(base + ".pendingDeliveriesRemoved", operation.pendingDeliveriesRemoved());
+        data.set(base + ".restorationOccurred", operation.restorationOccurred());
+        data.set(base + ".replacementHolder", operation.replacementHolder() == null ? null : operation.replacementHolder().toString());
+        data.set(base + ".watchUntil", operation.watchUntil());
+        data.set(base + ".partialRestoreConfirmed", operation.partialRestoreConfirmed());
+        data.set(base + ".pendingPlayers", operation.pendingPlayers().stream().map(UUID::toString).toList());
+        data.set(base + ".errors", operation.errors());
+        for (Map.Entry<String, Integer> count : operation.removedByLocation().entrySet()) {
+            data.set(base + ".removed." + count.getKey(), count.getValue());
+        }
+        for (int i = 0; i < operation.chunkTargets().size(); i++) {
+            PurgeChunkTarget target = operation.chunkTargets().get(i);
+            String targetBase = base + ".chunks." + i;
+            data.set(targetBase + ".worldUuid", target.worldUuid() == null ? null : target.worldUuid().toString());
+            data.set(targetBase + ".worldName", target.worldName());
+            data.set(targetBase + ".chunkX", target.chunkX());
+            data.set(targetBase + ".chunkZ", target.chunkZ());
+            data.set(targetBase + ".blockX", target.blockX());
+            data.set(targetBase + ".blockY", target.blockY());
+            data.set(targetBase + ".blockZ", target.blockZ());
+            data.set(targetBase + ".completed", target.completed());
+            data.set(targetBase + ".attempts", target.attempts());
+            data.set(targetBase + ".error", target.error());
+            data.set(targetBase + ".nextBlockEntityIndex", target.nextBlockEntityIndex());
+            data.set(targetBase + ".nextEntityIndex", target.nextEntityIndex());
+            data.set(targetBase + ".processedEntityUuids",
+                    target.processedEntityUuids().stream().map(UUID::toString).toList());
+        }
+    }
+
+    private void loadPurgeOperations(ConfigurationSection operations) {
+        if (operations == null) {
+            return;
+        }
+        for (String key : operations.getKeys(false)) {
+            UUID operationId = parseUuid(key);
+            ConfigurationSection section = operations.getConfigurationSection(key);
+            if (operationId == null || section == null) {
+                continue;
+            }
+            String diaryId = section.getString("diaryId");
+            ItemStack snapshot = readItem(section, "snapshotBase64", "snapshot");
+            if (diaryId == null) {
+                continue;
+            }
+            PurgeOperation operation = new PurgeOperation(
+                    operationId,
+                    diaryId,
+                    parseUuid(section.getString("ownerUuid")),
+                    parseUuid(section.getString("adminUuid")),
+                    parseEnum(PurgeDestination.class, section.getString("destination"), PurgeDestination.NONE),
+                    section.getLong("startedAt", 0L),
+                    snapshot
+            );
+            operation.setState(parseEnum(PurgeState.class, section.getString("state"), PurgeState.QUEUED));
+            operation.setCompletedAt(section.getLong("completedAt", 0L));
+            operation.setOnlinePlayersScanned(section.getInt("onlinePlayersScanned"));
+            operation.setLoadedChunksScanned(section.getInt("loadedChunksScanned"));
+            operation.setPendingDeliveriesRemoved(section.getInt("pendingDeliveriesRemoved"));
+            operation.setRestorationOccurred(section.getBoolean("restorationOccurred"));
+            operation.setReplacementHolder(parseUuid(section.getString("replacementHolder")));
+            operation.setWatchUntil(section.getLong("watchUntil"));
+            operation.setPartialRestoreConfirmed(section.getBoolean("partialRestoreConfirmed"));
+            for (String playerId : section.getStringList("pendingPlayers")) {
+                UUID uuid = parseUuid(playerId);
+                if (uuid != null) {
+                    operation.pendingPlayers().add(uuid);
+                }
+            }
+            operation.errors().addAll(section.getStringList("errors"));
+            ConfigurationSection removed = section.getConfigurationSection("removed");
+            if (removed != null) {
+                for (String location : removed.getKeys(false)) {
+                    operation.removedByLocation().put(location, removed.getInt(location));
+                }
+            }
+            ConfigurationSection chunks = section.getConfigurationSection("chunks");
+            if (chunks != null) {
+                List<String> chunkKeys = new ArrayList<>(chunks.getKeys(false));
+                chunkKeys.sort(String::compareTo);
+                for (String chunkKey : chunkKeys) {
+                    ConfigurationSection targetSection = chunks.getConfigurationSection(chunkKey);
+                    if (targetSection == null) {
+                        continue;
+                    }
+                    PurgeChunkTarget target = new PurgeChunkTarget(
+                            parseUuid(targetSection.getString("worldUuid")),
+                            targetSection.getString("worldName"),
+                            targetSection.getInt("chunkX"),
+                            targetSection.getInt("chunkZ"),
+                            targetSection.contains("blockX") ? targetSection.getInt("blockX") : null,
+                            targetSection.contains("blockY") ? targetSection.getInt("blockY") : null,
+                            targetSection.contains("blockZ") ? targetSection.getInt("blockZ") : null
+                    );
+                    target.loadState(targetSection.getBoolean("completed"),
+                            targetSection.getInt("attempts"), targetSection.getString("error"),
+                            targetSection.getInt("nextBlockEntityIndex"),
+                            targetSection.getInt("nextEntityIndex"));
+                    for (String entityId : targetSection.getStringList("processedEntityUuids")) {
+                        UUID uuid = parseUuid(entityId);
+                        if (uuid != null) {
+                            target.processedEntityUuids().add(uuid);
+                        }
+                    }
+                    operation.chunkTargets().add(target);
+                }
+            }
+            purgeOperations.put(operationId, operation);
+        }
+    }
+
+    private <T extends Enum<T>> T parseEnum(Class<T> type, String raw, T fallback) {
+        try {
+            return raw == null ? fallback : Enum.valueOf(type, raw.toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException ex) {
+            return fallback;
         }
     }
 

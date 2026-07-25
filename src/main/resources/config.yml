@@ -1,5 +1,5 @@
 # DiaryKeeper configuration
-config-version: 3
+config-version: 4
 #
 # Notes:
 # - Diaries stay WRITABLE_BOOK items forever unless you intentionally redesign that behavior in code.
@@ -92,6 +92,19 @@ analytics:
 
 restore:
   max-ground-entity-fallback-checks: 200
+
+# Persistent purge-and-restore work is staggered to protect the server tick.
+purge:
+  max-players-per-tick: 2
+  max-chunks-per-tick: 1
+  max-block-entities-per-tick: 50
+  max-entities-per-tick: 100
+  chunk-load-timeout-seconds: 15
+  max-chunk-retries: 3
+  max-recursion-depth: 4
+  allow-restore-on-partial-purge: false
+  post-purge-watch-minutes: 60
+  auto-remove-reappearing-copies: false
 
 # Periodic persistence for player diary IDs and queued deliveries.
 storage:

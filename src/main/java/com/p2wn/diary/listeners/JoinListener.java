@@ -16,6 +16,7 @@ public final class JoinListener implements Listener {
 
     @EventHandler
     public void onJoin(PlayerJoinEvent event) {
+        plugin.diaryPurgeService().processJoin(event.getPlayer());
         plugin.diaryService().handlePlayerJoin(event.getPlayer());
     }
 

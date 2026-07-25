@@ -13,6 +13,7 @@ public final class DiaryLocationRecord {
     private final String description;
     private final UUID holderUuid;
     private final String holderName;
+    private final UUID worldUuid;
     private final String worldName;
     private final Integer x;
     private final Integer y;
@@ -20,7 +21,11 @@ public final class DiaryLocationRecord {
     private final String containerType;
     private final UUID entityUuid;
     private final List<String> nestedPath;
-    private final long updatedAtEpochSeconds;
+    private final String inventoryScope;
+    private final Integer slot;
+    private final long firstSeenAtEpochSeconds;
+    private final long lastSeenAtEpochSeconds;
+    private final boolean active;
 
     public DiaryLocationRecord(
             DiaryLocationType type,
@@ -36,10 +41,35 @@ public final class DiaryLocationRecord {
             List<String> nestedPath,
             long updatedAtEpochSeconds
     ) {
+        this(type, description, holderUuid, holderName, null, worldName, x, y, z,
+                containerType, entityUuid, nestedPath, null, null,
+                updatedAtEpochSeconds, updatedAtEpochSeconds, true);
+    }
+
+    public DiaryLocationRecord(
+            DiaryLocationType type,
+            String description,
+            UUID holderUuid,
+            String holderName,
+            UUID worldUuid,
+            String worldName,
+            Integer x,
+            Integer y,
+            Integer z,
+            String containerType,
+            UUID entityUuid,
+            List<String> nestedPath,
+            String inventoryScope,
+            Integer slot,
+            long firstSeenAtEpochSeconds,
+            long lastSeenAtEpochSeconds,
+            boolean active
+    ) {
         this.type = type;
         this.description = description;
         this.holderUuid = holderUuid;
         this.holderName = holderName;
+        this.worldUuid = worldUuid;
         this.worldName = worldName;
         this.x = x;
         this.y = y;
@@ -47,7 +77,11 @@ public final class DiaryLocationRecord {
         this.containerType = containerType;
         this.entityUuid = entityUuid;
         this.nestedPath = List.copyOf(nestedPath);
-        this.updatedAtEpochSeconds = updatedAtEpochSeconds;
+        this.inventoryScope = inventoryScope;
+        this.slot = slot;
+        this.firstSeenAtEpochSeconds = firstSeenAtEpochSeconds;
+        this.lastSeenAtEpochSeconds = lastSeenAtEpochSeconds;
+        this.active = active;
     }
 
     public DiaryLocationType type() {
@@ -68,6 +102,10 @@ public final class DiaryLocationRecord {
 
     public String worldName() {
         return worldName;
+    }
+
+    public UUID worldUuid() {
+        return worldUuid;
     }
 
     public Integer x() {
@@ -95,7 +133,33 @@ public final class DiaryLocationRecord {
     }
 
     public long updatedAtEpochSeconds() {
-        return updatedAtEpochSeconds;
+        return lastSeenAtEpochSeconds;
+    }
+
+    public String inventoryScope() { return inventoryScope; }
+    public Integer slot() { return slot; }
+    public long firstSeenAtEpochSeconds() { return firstSeenAtEpochSeconds; }
+    public long lastSeenAtEpochSeconds() { return lastSeenAtEpochSeconds; }
+    public boolean active() { return active; }
+
+    public DiaryLocationRecord observedAgain(DiaryLocationRecord observation) {
+        return new DiaryLocationRecord(type, observation.description, holderUuid, observation.holderName,
+                observation.worldUuid, observation.worldName, observation.x, observation.y, observation.z,
+                observation.containerType, observation.entityUuid, observation.nestedPath,
+                observation.inventoryScope, observation.slot, firstSeenAtEpochSeconds,
+                observation.lastSeenAtEpochSeconds, true);
+    }
+
+    public DiaryLocationRecord inactive(long when) {
+        return new DiaryLocationRecord(type, description, holderUuid, holderName, worldUuid, worldName,
+                x, y, z, containerType, entityUuid, nestedPath, inventoryScope, slot,
+                firstSeenAtEpochSeconds, Math.max(lastSeenAtEpochSeconds, when), false);
+    }
+
+    public String identityKey() {
+        return type + "|" + holderUuid + "|" + worldUuid + "|" + worldName + "|"
+                + x + "|" + y + "|" + z + "|" + entityUuid + "|" + inventoryScope + "|"
+                + slot + "|" + String.join("/", nestedPath);
     }
 
     public void writeTo(ConfigurationSection section) {
@@ -103,6 +167,7 @@ public final class DiaryLocationRecord {
         section.set("description", description);
         section.set("holderUuid", holderUuid == null ? null : holderUuid.toString());
         section.set("holderName", holderName);
+        section.set("worldUuid", worldUuid == null ? null : worldUuid.toString());
         section.set("world", worldName);
         section.set("x", x);
         section.set("y", y);
@@ -110,7 +175,12 @@ public final class DiaryLocationRecord {
         section.set("containerType", containerType);
         section.set("entityUuid", entityUuid == null ? null : entityUuid.toString());
         section.set("nestedPath", nestedPath);
-        section.set("updatedAt", updatedAtEpochSeconds);
+        section.set("inventoryScope", inventoryScope);
+        section.set("slot", slot);
+        section.set("firstSeenAt", firstSeenAtEpochSeconds);
+        section.set("lastSeenAt", lastSeenAtEpochSeconds);
+        section.set("active", active);
+        section.set("updatedAt", lastSeenAtEpochSeconds);
     }
 
     public static DiaryLocationRecord readFrom(ConfigurationSection section) {
@@ -120,6 +190,7 @@ public final class DiaryLocationRecord {
                 section.getString("description", "unknown"),
                 parseUuid(section.getString("holderUuid")),
                 section.getString("holderName"),
+                parseUuid(section.getString("worldUuid")),
                 section.getString("world"),
                 section.contains("x") ? section.getInt("x") : null,
                 section.contains("y") ? section.getInt("y") : null,
@@ -127,7 +198,11 @@ public final class DiaryLocationRecord {
                 section.getString("containerType"),
                 parseUuid(section.getString("entityUuid")),
                 new ArrayList<>(section.getStringList("nestedPath")),
-                section.getLong("updatedAt", 0L)
+                section.getString("inventoryScope"),
+                section.contains("slot") ? section.getInt("slot") : null,
+                section.getLong("firstSeenAt", section.getLong("updatedAt", 0L)),
+                section.getLong("lastSeenAt", section.getLong("updatedAt", 0L)),
+                section.getBoolean("active", true)
         );
     }
 
