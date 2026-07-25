@@ -85,7 +85,7 @@ class DiaryPurgeSystemTest {
     void recordsOfflinePlayerPendingPurge() {
         PurgeOperation operation = operation(PurgeDestination.OWNER);
         UUID offline = UUID.randomUUID();
-        operation.pendingPlayers().add(offline);
+        operation.addPendingPlayer(offline);
         assertTrue(operation.pendingPlayers().contains(offline));
     }
 
@@ -127,7 +127,7 @@ class DiaryPurgeSystemTest {
     @Test
     void ownerOfflineDuringRestoreRemainsPending() {
         PurgeOperation operation = operation(PurgeDestination.OWNER);
-        operation.pendingPlayers().add(operation.ownerUuid());
+        operation.addPendingPlayer(operation.ownerUuid());
         operation.setState(PurgeState.WAITING_FOR_OFFLINE_PLAYERS);
         assertFalse(operation.pendingPlayers().isEmpty());
     }
@@ -164,8 +164,8 @@ class DiaryPurgeSystemTest {
     void playerJoiningActivePurgeCanBeMarkedComplete() {
         PurgeOperation operation = operation(PurgeDestination.NONE);
         UUID player = UUID.randomUUID();
-        operation.pendingPlayers().add(player);
-        assertTrue(operation.pendingPlayers().remove(player));
+        operation.addPendingPlayer(player);
+        assertTrue(operation.completePlayer(player));
         assertTrue(operation.pendingPlayers().isEmpty());
     }
 
@@ -192,7 +192,7 @@ class DiaryPurgeSystemTest {
     @Test
     void partialPurgeDoesNotImplyRestoration() {
         PurgeOperation operation = operation(PurgeDestination.OWNER);
-        operation.errors().add("chunk timeout");
+        operation.addError("chunk timeout");
         operation.setState(PurgeState.PARTIAL);
         assertFalse(operation.restorationOccurred());
     }

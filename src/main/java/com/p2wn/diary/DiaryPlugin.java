@@ -91,13 +91,12 @@ public final class DiaryPlugin extends JavaPlugin {
         activeRestrictionService = new RestrictionService(activeConfigManager, activeDiaryItem);
         activeVoidWatcher = new VoidWatcher(this, activeConfigManager, activeDiaryItem, activeDeliveryService, activeDuplicateWatcher);
         activeVoidWatcher.setPerformanceMonitor(activePerformanceMonitor);
-        activeDiaryRestoreService = new DiaryRestoreService(activeConfigManager, activeDiaryStore, activeDiaryItem, activeDiaryService, activeDeliveryService, activeDiaryTrackerService);
+        activeDiaryRestoreService = new DiaryRestoreService(activeDiaryStore);
         activeDiaryPurgeService = new DiaryPurgeService(this);
         activeRestoreGuiListener = new RestoreGuiListener(this);
 
         activeDiaryService.setDuplicateWatcher(activeDuplicateWatcher);
         activeDiaryService.setTrackerService(activeDiaryTrackerService);
-        activeDiaryService.setRestoreService(activeDiaryRestoreService);
         activeDiaryService.setAnalyticsStore(activeDiaryAnalyticsStore);
         activeDeliveryService.setDiaryService(activeDiaryService);
         activeDeliveryService.setTrackerService(activeDiaryTrackerService);

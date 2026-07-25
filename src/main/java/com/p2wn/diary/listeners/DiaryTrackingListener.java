@@ -3,7 +3,6 @@ package com.p2wn.diary.listeners;
 import com.p2wn.diary.DiaryPlugin;
 import org.bukkit.block.BlockState;
 import org.bukkit.block.Container;
-import org.bukkit.entity.Item;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;

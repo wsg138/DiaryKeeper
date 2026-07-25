@@ -16,7 +16,6 @@ import org.bukkit.OfflinePlayer;
 import org.bukkit.World;
 import org.bukkit.block.BlockState;
 import org.bukkit.block.Container;
-import org.bukkit.block.ShulkerBox;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Item;
 import org.bukkit.entity.ItemFrame;
@@ -26,17 +25,15 @@ import org.bukkit.inventory.EntityEquipment;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.ItemStack;
-import org.bukkit.inventory.meta.BlockStateMeta;
-import org.bukkit.inventory.meta.BundleMeta;
 import org.bukkit.scheduler.BukkitTask;
 
 import java.time.Instant;
 import java.util.ArrayDeque;
-import java.util.ArrayList;
 import java.util.Deque;
 import java.util.HashSet;
-import java.util.LinkedHashMap;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Comparator;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -45,6 +42,8 @@ public final class DiaryPurgeService {
 
     private record PlayerTarget(UUID operationId, UUID playerId) {}
     private record ChunkTarget(UUID operationId, PurgeChunkTarget target) {}
+    private record BlockPosition(int x, int y, int z) {}
+    private record ChunkWork(Deque<BlockPosition> blocks, Deque<UUID> entities) {}
 
     private final DiaryPlugin plugin;
     private final DiaryStore store;
@@ -53,6 +52,8 @@ public final class DiaryPurgeService {
     private final Deque<ChunkTarget> chunkQueue = new ArrayDeque<>();
     private final Set<String> queuedPlayerKeys = new HashSet<>();
     private final Set<String> queuedChunkKeys = new HashSet<>();
+    private final Map<String, ChunkWork> chunkWork = new HashMap<>();
+    private final Set<UUID> persistenceInFlight = new HashSet<>();
     private BukkitTask task;
 
     public DiaryPurgeService(DiaryPlugin plugin) {
@@ -86,11 +87,10 @@ public final class DiaryPurgeService {
         if (record == null || record.snapshot() == null) {
             return null;
         }
-        for (PurgeOperation existing : store.getPurgeOperationsForDiary(record.diaryId())) {
-            if (!existing.terminal() && existing.destination() == destination) {
-                enqueueRemaining(existing);
-                return existing;
-            }
+        PurgeOperation existing = store.getActivePurgeOperation(record.diaryId());
+        if (existing != null) {
+            enqueueRemaining(existing);
+            return existing;
         }
 
         UUID adminUuid = admin == null ? null : admin.getUniqueId();
@@ -101,29 +101,30 @@ public final class DiaryPurgeService {
         Set<UUID> onlineIds = new HashSet<>();
         for (Player player : Bukkit.getOnlinePlayers()) {
             onlineIds.add(player.getUniqueId());
-            operation.pendingPlayers().add(player.getUniqueId());
+            operation.addPendingPlayer(player.getUniqueId());
             enqueuePlayer(operation, player.getUniqueId());
         }
-        for (OfflinePlayer player : Bukkit.getOfflinePlayers()) {
-            if (player.hasPlayedBefore() && !onlineIds.contains(player.getUniqueId())) {
-                operation.pendingPlayers().add(player.getUniqueId());
+        for (UUID playerId : store.getCredibleOfflineHolders(record.diaryId())) {
+            if (!onlineIds.contains(playerId)) {
+                operation.addPendingPlayer(playerId);
                 analytics(DiaryAnalyticsEventType.PURGE_PENDING_PLAYER, operation,
-                        player.getUniqueId(), "join-time removal queued");
+                        playerId, "join-time removal queued");
             }
         }
 
-        addLoadedChunkTargets(operation);
         addKnownChunkTargets(operation, record.locations());
         int removedDeliveries = store.removeAllPendingDeliveriesByDiaryId(record.diaryId());
         operation.setPendingDeliveriesRemoved(removedDeliveries);
         operation.addRemoved("delivery_queue", removedDeliveries);
+        store.reconcileLegacyPendingRemovals(record.diaryId());
         store.addPurgeOperation(operation);
-        store.flushNowBlocking("purge start");
+        store.flushIfDirty();
         analytics(DiaryAnalyticsEventType.PURGE_STARTED, operation, adminUuid, destination.name());
         log(operation, "started by " + adminLabel(admin) + ", destination=" + destination
                 + ", pendingPlayers=" + operation.pendingPlayers().size()
                 + ", chunks=" + operation.chunkTargets().size());
         ensureTask();
+        finalizeIfReady(operation);
         return operation;
     }
 
@@ -135,7 +136,7 @@ public final class DiaryPurgeService {
         operation.setState(PurgeState.CANCELLED);
         operation.setCompletedAt(Instant.now().getEpochSecond());
         store.purgeOperationChanged();
-        store.flushNowBlocking("purge cancel");
+        store.flushIfDirty();
         log(operation, "cancelled by " + actor);
         return true;
     }
@@ -151,17 +152,17 @@ public final class DiaryPurgeService {
             analytics(DiaryAnalyticsEventType.PURGE_PARTIAL, operation, operation.adminUuid(),
                     "partial restore explicitly confirmed by " + actor);
             finalizeIfReady(operation);
-            store.flushNowBlocking("partial purge confirmation");
+            store.flushIfDirty();
             return true;
         }
         operation.setState(PurgeState.QUEUED);
-        operation.errors().clear();
+        operation.clearErrors();
         operation.chunkTargets().stream()
                 .filter(target -> target.completed() && target.error() != null)
                 .forEach(PurgeChunkTarget::resetForRetry);
         enqueueRemaining(operation);
         store.purgeOperationChanged();
-        store.flushNowBlocking("purge resume");
+        store.flushIfDirty();
         log(operation, "resumed by " + actor);
         return true;
     }
@@ -174,7 +175,7 @@ public final class DiaryPurgeService {
             }
             int removed = purgePlayer(player, operation.diaryId());
             operation.addRemoved("offline_player_join", removed);
-            operation.pendingPlayers().remove(player.getUniqueId());
+            operation.completePlayer(player.getUniqueId());
             operation.setOnlinePlayersScanned(operation.onlinePlayersScanned() + 1);
             changed = true;
             logRemoval(operation, "join:" + player.getUniqueId(), removed);
@@ -183,7 +184,7 @@ public final class DiaryPurgeService {
         if (changed) {
             player.updateInventory();
             store.purgeOperationChanged();
-            store.flushNowBlocking("join-time purge");
+            store.flushIfDirty();
             plugin.diaryTrackerService().trackPlayerInventory(player);
             plugin.diaryTrackerService().trackEnderChest(player);
             plugin.duplicateWatcher().refreshPlayerSnapshot(player);
@@ -192,6 +193,8 @@ public final class DiaryPurgeService {
 
     public void onChunkLoad(Chunk chunk) {
         for (PurgeOperation operation : store.getActivePurgeOperations()) {
+            addChunkTarget(operation, new PurgeChunkTarget(chunk.getWorld().getUID(), chunk.getWorld().getName(),
+                    chunk.getX(), chunk.getZ(), null, null, null));
             for (PurgeChunkTarget target : operation.chunkTargets()) {
                 if (!target.completed()
                         && target.chunkX() == chunk.getX()
@@ -227,7 +230,8 @@ public final class DiaryPurgeService {
         if (record == null || record.snapshot() == null) {
             return;
         }
-        deliver(record.ownerUuid(), record.snapshot(), DeliveryReason.RESTORE_DUPLICATE);
+        UUID token = UUID.randomUUID();
+        plugin.deliveryService().queue(record.ownerUuid(), DeliveryReason.RESTORE_DUPLICATE, record.snapshot(), token);
         analytics(DiaryAnalyticsEventType.RESTORE_DUPLICATE, null, requestedAdmin == null ? null : requestedAdmin.getUniqueId(),
                 "intentional duplicate");
         plugin.getLogger().warning("[Diary Purge] Intentional duplicate restore diary=" + record.diaryId()
@@ -237,6 +241,11 @@ public final class DiaryPurgeService {
     public void onObservedCopy(String diaryId, String detail, int occurrenceCount) {
         long now = Instant.now().getEpochSecond();
         for (PurgeOperation operation : store.getPurgeOperationsForDiary(diaryId)) {
+            if (!operation.terminal()) {
+                operation.setVerificationRequired(true);
+                ensureTask();
+                continue;
+            }
             if (operation.state() == PurgeState.COMPLETED && operation.watchUntil() >= now
                     && (operation.destination() == PurgeDestination.NONE || occurrenceCount > 1)) {
                 analytics(DiaryAnalyticsEventType.POST_PURGE_COPY_FOUND, operation, null, detail);
@@ -281,13 +290,13 @@ public final class DiaryPurgeService {
         Player player = Bukkit.getPlayer(target.playerId());
         if (operation == null || operation.terminal() || player == null || !player.isOnline()) {
             if (operation != null && !operation.terminal()) {
-                operation.pendingPlayers().add(target.playerId());
+                operation.addPendingPlayer(target.playerId());
             }
             return;
         }
         int removed = purgePlayer(player, operation.diaryId());
         operation.addRemoved("online_player", removed);
-        operation.pendingPlayers().remove(player.getUniqueId());
+        operation.completePlayer(player.getUniqueId());
         operation.setOnlinePlayersScanned(operation.onlinePlayersScanned() + 1);
         player.updateInventory();
         logRemoval(operation, "player:" + player.getUniqueId(), removed);
@@ -318,7 +327,7 @@ public final class DiaryPurgeService {
         if (world == null) {
             target.fail("world unavailable");
             if (retryOrFinish(operation, target)) {
-                operation.errors().add("World unavailable for " + target.key());
+                operation.addError("World unavailable for " + target.key());
             }
             analytics(DiaryAnalyticsEventType.PURGE_FAILED, operation, null, "world unavailable " + target.key());
             finalizeIfReady(operation);
@@ -341,10 +350,9 @@ public final class DiaryPurgeService {
             if (loadMillis > timeoutMillis) {
                 throw new IllegalStateException("chunk load exceeded " + timeoutMillis + "ms");
             }
-            ChunkPurgeResult result = purgeChunk(chunk, operation.diaryId(), target);
+            ChunkPurgeResult result = purgeChunk(chunk, operation.diaryId(), operation.operationId(), target);
             int removed = result.removed();
             operation.addRemoved("chunk", removed);
-            target.advance(result.nextBlockIndex(), result.nextEntityIndex());
             if (result.complete()) {
                 operation.setLoadedChunksScanned(operation.loadedChunksScanned() + 1);
                 target.complete();
@@ -355,7 +363,7 @@ public final class DiaryPurgeService {
         } catch (RuntimeException ex) {
             target.fail(ex.getClass().getSimpleName() + ": " + ex.getMessage());
             if (retryOrFinish(operation, target)) {
-                operation.errors().add("Chunk " + target.key() + ": " + ex.getMessage());
+                operation.addError("Chunk " + target.key() + ": " + ex.getMessage());
             }
             analytics(DiaryAnalyticsEventType.PURGE_FAILED, operation, null, "chunk " + target.key());
         } finally {
@@ -376,16 +384,16 @@ public final class DiaryPurgeService {
         return true;
     }
 
-    private record ChunkPurgeResult(int removed, int nextBlockIndex, int nextEntityIndex, boolean complete) {}
+    private record ChunkPurgeResult(int removed, boolean complete) {}
 
-    private ChunkPurgeResult purgeChunk(Chunk chunk, String diaryId, PurgeChunkTarget target) {
+    private ChunkPurgeResult purgeChunk(Chunk chunk, String diaryId, UUID operationId, PurgeChunkTarget target) {
         int removed = 0;
+        String workKey = operationId + ":" + target.key();
+        ChunkWork work = chunkWork.computeIfAbsent(workKey, ignored -> createChunkWork(chunk));
         int maxBlockEntities = Math.max(1, plugin.getConfig().getInt("purge.max-block-entities-per-tick", 50));
-        BlockState[] tileEntities = chunk.getTileEntities();
-        int blockIndex = target.nextBlockEntityIndex();
-        int blockLimit = Math.min(tileEntities.length, blockIndex + maxBlockEntities);
-        for (; blockIndex < blockLimit; blockIndex++) {
-            BlockState state = tileEntities[blockIndex];
+        for (int i = 0; i < maxBlockEntities && !work.blocks().isEmpty(); i++) {
+            BlockPosition position = work.blocks().removeFirst();
+            BlockState state = chunk.getWorld().getBlockAt(position.x(), position.y(), position.z()).getState();
             if (state instanceof Container container) {
                 int count = itemPurger.purgeInventory(container.getInventory(), diaryId);
                 if (count > 0) {
@@ -395,27 +403,31 @@ public final class DiaryPurgeService {
             }
         }
         int maxEntities = Math.max(1, plugin.getConfig().getInt("purge.max-entities-per-tick", 100));
-        Entity[] entities = chunk.getEntities();
-        int entityIndex = target.nextEntityIndex();
-        if (blockIndex >= tileEntities.length) {
-            int processed = 0;
-            for (Entity entity : entities) {
-                if (target.processedEntityUuids().contains(entity.getUniqueId())) {
-                    continue;
-                }
+        if (work.blocks().isEmpty()) {
+            for (int i = 0; i < maxEntities && !work.entities().isEmpty(); i++) {
+                Entity entity = Bukkit.getEntity(work.entities().removeFirst());
+                if (entity != null && entity.getChunk().equals(chunk)) {
                 removed += purgeEntity(entity, diaryId);
-                target.processedEntityUuids().add(entity.getUniqueId());
-                processed++;
-                if (processed >= maxEntities) {
-                    break;
                 }
             }
-            entityIndex = target.processedEntityUuids().size();
         }
-        boolean hasUnprocessedEntity = java.util.Arrays.stream(entities)
-                .anyMatch(entity -> !target.processedEntityUuids().contains(entity.getUniqueId()));
-        boolean complete = blockIndex >= tileEntities.length && !hasUnprocessedEntity;
-        return new ChunkPurgeResult(removed, blockIndex, entityIndex, complete);
+        boolean complete = work.blocks().isEmpty() && work.entities().isEmpty();
+        if (complete) {
+            chunkWork.remove(workKey);
+        }
+        return new ChunkPurgeResult(removed, complete);
+    }
+
+    private ChunkWork createChunkWork(Chunk chunk) {
+        Deque<BlockPosition> blocks = new ArrayDeque<>();
+        java.util.Arrays.stream(chunk.getTileEntities())
+                .map(state -> new BlockPosition(state.getX(), state.getY(), state.getZ()))
+                .sorted(Comparator.comparingInt(BlockPosition::x)
+                        .thenComparingInt(BlockPosition::y).thenComparingInt(BlockPosition::z))
+                .forEach(blocks::addLast);
+        Deque<UUID> entities = new ArrayDeque<>();
+        java.util.Arrays.stream(chunk.getEntities()).map(Entity::getUniqueId).sorted().forEach(entities::addLast);
+        return new ChunkWork(blocks, entities);
     }
 
     private int purgeEntity(Entity entity, String diaryId) {
@@ -438,7 +450,7 @@ public final class DiaryPurgeService {
             return result.removed();
         }
         int removed = 0;
-        if (entity instanceof org.bukkit.inventory.InventoryHolder holder) {
+        if (entity instanceof InventoryHolder holder) {
             removed += itemPurger.purgeInventory(holder.getInventory(), diaryId);
         }
         if (entity instanceof LivingEntity living) {
@@ -492,9 +504,68 @@ public final class DiaryPurgeService {
                 return;
             }
         }
+        if (operation.verificationRequired()) {
+            beginVerification(operation);
+            return;
+        }
+        if (operation.state() == PurgeState.VERIFYING
+                && operation.totalRemoved() > operation.verificationRemovedBaseline()) {
+            operation.setVerificationRequired(true);
+            finalizeIfReady(operation);
+            return;
+        }
         operation.setState(PurgeState.READY_TO_RESTORE);
         store.markAllLocationsInactive(operation.diaryId());
-        restoreIfNeeded(operation);
+        persistReadyThenRestore(operation);
+    }
+
+    private void beginVerification(PurgeOperation operation) {
+        operation.setState(PurgeState.VERIFYING);
+        operation.setVerificationRequired(false);
+        operation.setVerificationRemovedBaseline(operation.totalRemoved());
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            operation.addPendingPlayer(player.getUniqueId());
+            enqueuePlayer(operation, player.getUniqueId());
+        }
+        for (PurgeChunkTarget target : operation.chunkTargets()) {
+            if (target.error() == null) {
+                target.resetForRetry();
+                enqueueChunk(operation, target);
+            }
+        }
+        addLoadedChunkTargets(operation);
+        int removed = store.removeAllPendingDeliveriesByDiaryId(operation.diaryId());
+        operation.setPendingDeliveriesRemoved(operation.pendingDeliveriesRemoved() + removed);
+        operation.addRemoved("delivery_queue_verification", removed);
+        ensureTask();
+        if (onlineQueue.stream().noneMatch(target -> target.operationId().equals(operation.operationId()))
+                && operation.pendingChunks() == 0) {
+            finalizeIfReady(operation);
+        }
+    }
+
+    private void persistReadyThenRestore(PurgeOperation operation) {
+        if (!persistenceInFlight.add(operation.operationId())) {
+            return;
+        }
+        if (operation.deliveryToken() == null) {
+            operation.setDeliveryToken(UUID.randomUUID());
+        }
+        store.flushDurably().whenComplete((ignored, failure) -> Bukkit.getScheduler().runTask(plugin, () -> {
+            persistenceInFlight.remove(operation.operationId());
+            if (failure != null) {
+                operation.addError("Could not persist READY_TO_RESTORE: " + failure.getMessage());
+                operation.setState(PurgeState.FAILED);
+                return;
+            }
+            if (operation.verificationRequired() || operation.pendingChunks() > 0
+                    || !operation.pendingPlayers().isEmpty()) {
+                operation.setState(PurgeState.QUEUED);
+                finalizeIfReady(operation);
+                return;
+            }
+            restoreIfNeeded(operation);
+        }));
     }
 
     private void restoreIfNeeded(PurgeOperation operation) {
@@ -509,71 +580,32 @@ public final class DiaryPurgeService {
         UUID target = operation.destination() == PurgeDestination.OWNER
                 ? operation.ownerUuid() : operation.adminUuid();
         if (target == null || operation.snapshot() == null) {
-            operation.errors().add("Restore destination or snapshot is missing");
+            operation.addError("Restore destination or snapshot is missing");
             operation.setState(PurgeState.FAILED);
             analytics(DiaryAnalyticsEventType.PURGE_FAILED, operation, target, "missing restore target");
             return;
         }
         DeliveryReason reason = operation.destination() == PurgeDestination.OWNER
                 ? DeliveryReason.RESTORE_OWNER : DeliveryReason.RESTORE_ADMIN;
-        deliver(target, operation.snapshot(), reason);
+        if (!store.hasPendingDeliveryToken(operation.deliveryToken())) {
+            store.queueDelivery(target, reason, operation.snapshot(), operation.deliveryToken());
+        }
         operation.setRestorationOccurred(true);
         operation.setReplacementHolder(target);
         operation.setState(PurgeState.RESTORED);
-        analytics(operation.destination() == PurgeDestination.OWNER
-                        ? DiaryAnalyticsEventType.RESTORE_TO_OWNER : DiaryAnalyticsEventType.RESTORE_TO_ADMIN,
-                operation, target, reason.name());
-        log(operation, "replacement delivered/queued to " + target + " owner remains " + operation.ownerUuid());
-        complete(operation);
-    }
-
-    private void deliver(UUID targetId, ItemStack snapshot, DeliveryReason reason) {
-        Player target = Bukkit.getPlayer(targetId);
-        String diaryId = plugin.diaryItem().getDiaryId(snapshot);
-        if (target != null && target.isOnline() && containsDiary(target.getInventory(), diaryId, 0)) {
-            return;
-        }
-        if (target != null && target.isOnline() && target.getInventory().addItem(snapshot.clone()).isEmpty()) {
-            plugin.diaryTrackerService().trackPlayerInventory(target);
-            target.sendMessage(plugin.configManager().msg("purge.restore-delivered"));
-            return;
-        }
-        if (!store.hasPendingDelivery(targetId, diaryId)) {
-            plugin.deliveryService().queue(targetId, reason, snapshot.clone());
-        }
-        if (target != null && target.isOnline()) {
-            target.sendMessage(plugin.configManager().msg("purge.restore-queued"));
-        }
-    }
-
-    private boolean containsDiary(Inventory inventory, String diaryId, int depth) {
-        for (ItemStack stack : inventory.getContents()) {
-            if (containsDiary(stack, diaryId, depth)) {
-                return true;
+        store.flushDurably().whenComplete((ignored, failure) -> Bukkit.getScheduler().runTask(plugin, () -> {
+            if (failure != null) {
+                operation.addError("Could not persist restore outbox: " + failure.getMessage());
+                operation.setState(PurgeState.FAILED);
+                return;
             }
-        }
-        return false;
-    }
-
-    private boolean containsDiary(ItemStack stack, String diaryId, int depth) {
-        if (stack == null || stack.getType() == org.bukkit.Material.AIR) {
-            return false;
-        }
-        if (plugin.diaryItem().isDiary(stack)) {
-            return diaryId.equals(plugin.diaryItem().getDiaryId(stack));
-        }
-        int maxDepth = Math.max(1, plugin.getConfig().getInt("purge.max-recursion-depth", 4));
-        if (depth >= maxDepth || !stack.hasItemMeta()) {
-            return false;
-        }
-        if (stack.getType() == org.bukkit.Material.BUNDLE && stack.getItemMeta() instanceof BundleMeta bundle) {
-            return bundle.getItems().stream().anyMatch(item -> containsDiary(item, diaryId, depth + 1));
-        }
-        if (stack.getItemMeta() instanceof BlockStateMeta stateMeta
-                && stateMeta.getBlockState() instanceof ShulkerBox shulker) {
-            return containsDiary(shulker.getInventory(), diaryId, depth + 1);
-        }
-        return false;
+            plugin.deliveryService().requestDelivery(target);
+            analytics(operation.destination() == PurgeDestination.OWNER
+                            ? DiaryAnalyticsEventType.RESTORE_TO_OWNER : DiaryAnalyticsEventType.RESTORE_TO_ADMIN,
+                    operation, target, reason.name());
+            log(operation, "replacement queued to " + target + " owner remains " + operation.ownerUuid());
+            complete(operation);
+        }));
     }
 
     private void complete(PurgeOperation operation) {
@@ -582,7 +614,7 @@ public final class DiaryPurgeService {
         long watchMinutes = Math.max(0L, plugin.getConfig().getLong("purge.post-purge-watch-minutes", 60L));
         operation.setWatchUntil(Instant.now().plusSeconds(watchMinutes * 60L).getEpochSecond());
         store.purgeOperationChanged();
-        store.flushNowBlocking("purge completion");
+        store.flushIfDirty();
         analytics(DiaryAnalyticsEventType.PURGE_COMPLETED, operation, operation.replacementHolder(),
                 "removed=" + operation.totalRemoved());
         log(operation, "completed removed=" + operation.totalRemoved());
@@ -637,11 +669,27 @@ public final class DiaryPurgeService {
     }
 
     private void addChunkTarget(PurgeOperation operation, PurgeChunkTarget candidate) {
-        if (operation.chunkTargets().stream().noneMatch(existing -> existing.key().equals(candidate.key()))) {
-            operation.chunkTargets().add(candidate);
+        if (operation.chunkTargets().stream().noneMatch(existing -> sameChunk(existing, candidate))) {
+            operation.addChunkTarget(candidate);
             enqueueChunk(operation, candidate);
             analytics(DiaryAnalyticsEventType.PURGE_PENDING_CHUNK, operation, null, candidate.key());
         }
+    }
+
+    private boolean sameChunk(PurgeChunkTarget left, PurgeChunkTarget right) {
+        if (left.chunkX() != right.chunkX() || left.chunkZ() != right.chunkZ()) {
+            return false;
+        }
+        World leftWorld = resolveWorld(left);
+        World rightWorld = resolveWorld(right);
+        if (leftWorld != null && rightWorld != null) {
+            return leftWorld.getUID().equals(rightWorld.getUID());
+        }
+        if (left.worldUuid() != null && right.worldUuid() != null) {
+            return left.worldUuid().equals(right.worldUuid());
+        }
+        return left.worldName() != null && right.worldName() != null
+                && left.worldName().equalsIgnoreCase(right.worldName());
     }
 
     private World resolveWorld(PurgeChunkTarget target) {

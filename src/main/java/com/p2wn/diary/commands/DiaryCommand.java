@@ -303,6 +303,9 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
         if (diaryId != null) {
             return diaryId;
         }
+        if (plugin.diaryStore().isAmbiguousDiaryIdPrefix(input)) {
+            return null;
+        }
 
         OfflinePlayer target = resolveOfflinePlayer(input);
         return target.getUniqueId() == null ? null : plugin.diaryStore().findDiaryIdByOwner(target.getUniqueId());

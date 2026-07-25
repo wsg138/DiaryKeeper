@@ -11,6 +11,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
+@SuppressWarnings("PMD.AvoidFieldNameMatchingMethodName")
 public final class PurgeOperation {
 
     private final UUID operationId;
@@ -33,6 +34,10 @@ public final class PurgeOperation {
     private UUID replacementHolder;
     private long watchUntil;
     private boolean partialRestoreConfirmed;
+    private UUID deliveryToken;
+    private boolean verificationRequired = true;
+    private int verificationRemovedBaseline;
+    private transient Runnable dirtyCallback = () -> { };
 
     public PurgeOperation(UUID operationId, String diaryId, UUID ownerUuid, UUID adminUuid,
                           PurgeDestination destination, long startedAt, ItemStack snapshot) {
@@ -59,10 +64,10 @@ public final class PurgeOperation {
     public PurgeDestination destination() { return destination; }
     public long startedAt() { return startedAt; }
     public ItemStack snapshot() { return snapshot == null ? null : snapshot.clone(); }
-    public Set<UUID> pendingPlayers() { return pendingPlayers; }
-    public List<PurgeChunkTarget> chunkTargets() { return chunkTargets; }
-    public Map<String, Integer> removedByLocation() { return removedByLocation; }
-    public List<String> errors() { return errors; }
+    public Set<UUID> pendingPlayers() { return Set.copyOf(pendingPlayers); }
+    public List<PurgeChunkTarget> chunkTargets() { return List.copyOf(chunkTargets); }
+    public Map<String, Integer> removedByLocation() { return Map.copyOf(removedByLocation); }
+    public List<String> errors() { return List.copyOf(errors); }
     public PurgeState state() { return state; }
     public long completedAt() { return completedAt; }
     public int onlinePlayersScanned() { return onlinePlayersScanned; }
@@ -72,20 +77,42 @@ public final class PurgeOperation {
     public UUID replacementHolder() { return replacementHolder; }
     public long watchUntil() { return watchUntil; }
     public boolean partialRestoreConfirmed() { return partialRestoreConfirmed; }
+    public UUID deliveryToken() { return deliveryToken; }
+    public boolean verificationRequired() { return verificationRequired; }
+    public int verificationRemovedBaseline() { return verificationRemovedBaseline; }
 
-    public void setState(PurgeState state) { this.state = state; }
-    public void setCompletedAt(long completedAt) { this.completedAt = completedAt; }
-    public void setOnlinePlayersScanned(int value) { this.onlinePlayersScanned = value; }
-    public void setLoadedChunksScanned(int value) { this.loadedChunksScanned = value; }
-    public void setPendingDeliveriesRemoved(int value) { this.pendingDeliveriesRemoved = value; }
-    public void setRestorationOccurred(boolean value) { this.restorationOccurred = value; }
-    public void setReplacementHolder(UUID value) { this.replacementHolder = value; }
-    public void setWatchUntil(long value) { this.watchUntil = value; }
-    public void setPartialRestoreConfirmed(boolean value) { this.partialRestoreConfirmed = value; }
+    public void attachDirtyCallback(Runnable callback) {
+        dirtyCallback = callback == null ? () -> { } : callback;
+        chunkTargets.forEach(target -> target.attachDirtyCallback(dirtyCallback));
+    }
+
+    public void setState(PurgeState value) { state = value; changed(); }
+    public void setCompletedAt(long value) { completedAt = value; changed(); }
+    public void setOnlinePlayersScanned(int value) { onlinePlayersScanned = value; changed(); }
+    public void setLoadedChunksScanned(int value) { loadedChunksScanned = value; changed(); }
+    public void setPendingDeliveriesRemoved(int value) { pendingDeliveriesRemoved = value; changed(); }
+    public void setRestorationOccurred(boolean value) { restorationOccurred = value; changed(); }
+    public void setReplacementHolder(UUID value) { replacementHolder = value; changed(); }
+    public void setWatchUntil(long value) { watchUntil = value; changed(); }
+    public void setPartialRestoreConfirmed(boolean value) { partialRestoreConfirmed = value; changed(); }
+    public void setDeliveryToken(UUID value) { deliveryToken = value; changed(); }
+    public void setVerificationRequired(boolean value) { verificationRequired = value; changed(); }
+    public void setVerificationRemovedBaseline(int value) { verificationRemovedBaseline = value; changed(); }
+
+    public boolean addPendingPlayer(UUID playerId) { boolean result = pendingPlayers.add(playerId); if (result) changed(); return result; }
+    public boolean completePlayer(UUID playerId) { boolean result = pendingPlayers.remove(playerId); if (result) changed(); return result; }
+    public void addChunkTarget(PurgeChunkTarget target) { target.attachDirtyCallback(dirtyCallback); chunkTargets.add(target); changed(); }
+    public void addError(String error) { errors.add(error); pruneErrors(); changed(); }
+    public void clearErrors() { if (!errors.isEmpty()) { errors.clear(); changed(); } }
+    void loadPendingPlayer(UUID playerId) { pendingPlayers.add(playerId); }
+    void loadError(String error) { errors.add(error); }
+    void loadRemoved(String location, int count) { removedByLocation.put(location, count); }
+    void loadChunkTarget(PurgeChunkTarget target) { chunkTargets.add(target); }
 
     public void addRemoved(String location, int amount) {
         if (amount > 0) {
             removedByLocation.merge(location, amount, Integer::sum);
+            changed();
         }
     }
 
@@ -99,5 +126,15 @@ public final class PurgeOperation {
 
     public boolean terminal() {
         return state == PurgeState.COMPLETED || state == PurgeState.CANCELLED || state == PurgeState.FAILED;
+    }
+
+    private void pruneErrors() {
+        while (errors.size() > 25) {
+            errors.removeFirst();
+        }
+    }
+
+    private void changed() {
+        dirtyCallback.run();
     }
 }

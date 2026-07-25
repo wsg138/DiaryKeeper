@@ -105,6 +105,10 @@ purge:
   allow-restore-on-partial-purge: false
   post-purge-watch-minutes: 60
   auto-remove-reappearing-copies: false
+  retention:
+    completed-operation-days: 30
+    inactive-location-days: 90
+    max-locations-per-diary: 100
 
 # Periodic persistence for player diary IDs and queued deliveries.
 storage:

@@ -13,6 +13,7 @@ import org.bukkit.Material;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockState;
 import org.bukkit.block.ShulkerBox;
+import org.bukkit.block.Container;
 import org.bukkit.entity.HumanEntity;
 import org.bukkit.entity.Item;
 import org.bukkit.entity.Player;
@@ -56,6 +57,7 @@ public final class DuplicateWatcher {
     private final Map<String, Long> lastWarnAt = new HashMap<>();
     private final Map<UUID, List<Occurrence>> playerSnapshots = new HashMap<>();
     private final Map<UUID, List<Occurrence>> groundItemSnapshots = new HashMap<>();
+    private final Map<String, List<Occurrence>> blockContainerSnapshots = new HashMap<>();
     private final Deque<UUID> queuedPlayerScans = new ArrayDeque<>();
     private final Deque<ChunkScanTarget> queuedChunkScans = new ArrayDeque<>();
     private final Map<String, ChunkScanTarget> queuedChunkKeys = new HashMap<>();
@@ -154,6 +156,8 @@ public final class DuplicateWatcher {
         for (org.bukkit.entity.Entity entity : chunk.getEntities()) {
             groundItemSnapshots.remove(entity.getUniqueId());
         }
+        String prefix = chunk.getWorld().getUID() + ":" + chunk.getX() + ":" + chunk.getZ() + ":";
+        blockContainerSnapshots.keySet().removeIf(key -> key.startsWith(prefix));
     }
 
     public void sweepStartup() {
@@ -270,12 +274,11 @@ public final class DuplicateWatcher {
         }
     }
 
-    private List<Occurrence> scanChunkItems(Chunk chunk) {
-        return scanChunkItems(chunk, 0, Integer.MAX_VALUE).occurrences();
-    }
-
     private ChunkScanResult scanChunkItems(Chunk chunk, int startIndex, int maxEntities) {
         List<Occurrence> occurrences = new ArrayList<>();
+        if (startIndex == 0) {
+            scanBlockContainers(chunk, occurrences);
+        }
         org.bukkit.entity.Entity[] entities = chunk.getEntities();
         int processed = 0;
         int index = Math.max(0, startIndex);
@@ -296,6 +299,25 @@ public final class DuplicateWatcher {
             }
         }
         return new ChunkScanResult(occurrences, index, index < entities.length);
+    }
+
+    private void scanBlockContainers(Chunk chunk, List<Occurrence> occurrences) {
+        for (BlockState state : chunk.getTileEntities()) {
+            if (!(state instanceof Container container)) {
+                continue;
+            }
+            List<Occurrence> found = new ArrayList<>();
+            scanInventoryContents(container.getInventory().getContents(), "container", "block_container",
+                    coordsOf(state.getLocation()), found);
+            String key = chunk.getWorld().getUID() + ":" + chunk.getX() + ":" + chunk.getZ()
+                    + ":" + state.getX() + ":" + state.getY() + ":" + state.getZ();
+            if (found.isEmpty()) {
+                blockContainerSnapshots.remove(key);
+            } else {
+                blockContainerSnapshots.put(key, found);
+                occurrences.addAll(found);
+            }
+        }
     }
 
     private record ChunkScanResult(List<Occurrence> occurrences, int nextEntityIndex, boolean incomplete) {}
@@ -489,6 +511,9 @@ public final class DuplicateWatcher {
             addOccurrences(grouped, occurrences);
         }
         for (List<Occurrence> occurrences : groundItemSnapshots.values()) {
+            addOccurrences(grouped, occurrences);
+        }
+        for (List<Occurrence> occurrences : blockContainerSnapshots.values()) {
             addOccurrences(grouped, occurrences);
         }
         return grouped;

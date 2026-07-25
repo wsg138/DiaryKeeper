@@ -50,6 +50,11 @@ By default, replacement delivery waits until all required targets succeed.
 administrator must explicitly run `purge resume <operationId>` after the operation
 enters `PARTIAL` to confirm that risk.
 
+Before replacement delivery, the purge repeats its online-player, loaded/known
+chunk, and delivery-queue scans until a complete pass removes no copies. The
+replacement is then written to a tokenized delivery outbox before it can be
+delivered, so resuming the same operation does not enqueue another replacement.
+
 ## Purge configuration
 
 ```yaml
@@ -64,11 +69,15 @@ purge:
   allow-restore-on-partial-purge: false
   post-purge-watch-minutes: 60
   auto-remove-reappearing-copies: false
+  retention:
+    completed-operation-days: 30
+    inactive-location-days: 90
+    max-locations-per-diary: 100
 ```
 
 Tracking keeps active and historical locations in the existing `diaries.yml`.
 Legacy single-location records are imported automatically on load. Completed purge
-IDs remain available for auditing and post-purge duplicate alerts.
+IDs remain available through the configured audit/watch retention period.
 
 ## Build
 

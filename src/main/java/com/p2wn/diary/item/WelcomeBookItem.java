@@ -76,10 +76,8 @@ public final class WelcomeBookItem {
     }
 
     private WelcomeBookTemplate loadTemplate() {
-        if (!templateFile.exists()) {
-            if (!copyBundledTemplate()) {
-                return defaultTemplate();
-            }
+        if (!templateFile.exists() && !copyBundledTemplate()) {
+            return defaultTemplate();
         }
 
         ItemStack book = readTemplateItem();

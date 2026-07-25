@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
 
+@SuppressWarnings("PMD.AvoidFieldNameMatchingMethodName")
 public final class DiaryLocationRecord {
 
     private final DiaryLocationType type;
@@ -156,8 +157,16 @@ public final class DiaryLocationRecord {
                 firstSeenAtEpochSeconds, Math.max(lastSeenAtEpochSeconds, when), false);
     }
 
+    public DiaryLocationRecord withWorldUuid(UUID value) {
+        return new DiaryLocationRecord(type, description, holderUuid, holderName, value, worldName,
+                x, y, z, containerType, entityUuid, nestedPath, inventoryScope, slot,
+                firstSeenAtEpochSeconds, lastSeenAtEpochSeconds, active);
+    }
+
     public String identityKey() {
-        return type + "|" + holderUuid + "|" + worldUuid + "|" + worldName + "|"
+        String worldKey = worldUuid == null
+                ? (worldName == null ? null : worldName.toLowerCase(Locale.ROOT)) : worldUuid.toString();
+        return type + "|" + holderUuid + "|" + worldKey + "|"
                 + x + "|" + y + "|" + z + "|" + entityUuid + "|" + inventoryScope + "|"
                 + slot + "|" + String.join("/", nestedPath);
     }

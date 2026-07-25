@@ -51,7 +51,6 @@ public final class DiaryService {
     private final DeliveryService deliveryService;
     private final Plugin plugin;
     private DiaryTrackerService trackerService;
-    private DiaryRestoreService restoreService;
     private DuplicateWatcher duplicateWatcher;
     private DiaryAnalyticsStore analyticsStore;
 
@@ -70,10 +69,6 @@ public final class DiaryService {
 
     public void setTrackerService(DiaryTrackerService trackerService) {
         this.trackerService = trackerService;
-    }
-
-    public void setRestoreService(DiaryRestoreService restoreService) {
-        this.restoreService = restoreService;
     }
 
     public void setAnalyticsStore(DiaryAnalyticsStore analyticsStore) {
@@ -109,9 +104,6 @@ public final class DiaryService {
     }
 
     public void handlePlayerJoin(Player player) {
-        if (restoreService != null) {
-            restoreService.processPendingRemovals(player);
-        }
         refreshOwnedDiaries(player);
         if (trackerService != null) {
             trackerService.trackPlayerInventory(player);

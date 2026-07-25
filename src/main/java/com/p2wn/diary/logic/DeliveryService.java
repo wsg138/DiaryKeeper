@@ -9,6 +9,7 @@ import org.bukkit.Bukkit;
 import org.bukkit.OfflinePlayer;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.scheduler.BukkitTask;
 
@@ -48,7 +49,11 @@ public final class DeliveryService {
     }
 
     public void queue(UUID playerId, DeliveryReason reason, ItemStack item) {
-        diaryStore.queueDelivery(playerId, reason, item);
+        queue(playerId, reason, item, null);
+    }
+
+    public void queue(UUID playerId, DeliveryReason reason, ItemStack item, UUID token) {
+        diaryStore.queueDelivery(playerId, reason, item, token);
         diaryStore.flushIfDirty();
         updateDeliveryQueueSize();
         if (analyticsStore != null) {
@@ -97,7 +102,7 @@ public final class DeliveryService {
         }
     }
 
-    private void tick() {
+    void tick() {
         Set<UUID> playerIds = diaryStore.getPlayersWithPendingDeliveries();
         if (playerIds.isEmpty()) {
             stop();
@@ -126,6 +131,11 @@ public final class DeliveryService {
             int deliveredCount = 0;
             for (PendingDelivery delivery : deliveries) {
                 ItemStack item = delivery.item().clone();
+                if (hasDeliveredToken(player, delivery.token())) {
+                    deliveredCount++;
+                    continue;
+                }
+                stampDeliveryToken(item, delivery.token());
                 if (!player.getInventory().addItem(item).isEmpty()) {
                     break;
                 }
@@ -171,6 +181,30 @@ public final class DeliveryService {
             return null;
         }
         return diaryService.getDiaryId(item);
+    }
+
+    private boolean hasDeliveredToken(Player player, UUID token) {
+        if (token == null || !(plugin instanceof com.p2wn.diary.DiaryPlugin diaryPlugin)) {
+            return false;
+        }
+        String value = token.toString();
+        for (ItemStack item : player.getInventory().getContents()) {
+            if (item != null && item.hasItemMeta() && value.equals(item.getItemMeta().getPersistentDataContainer()
+                    .get(diaryPlugin.diaryKeys().deliveryToken(), PersistentDataType.STRING))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void stampDeliveryToken(ItemStack item, UUID token) {
+        if (token == null || !(plugin instanceof com.p2wn.diary.DiaryPlugin diaryPlugin)) {
+            return;
+        }
+        var meta = item.getItemMeta();
+        meta.getPersistentDataContainer().set(
+                diaryPlugin.diaryKeys().deliveryToken(), PersistentDataType.STRING, token.toString());
+        item.setItemMeta(meta);
     }
 
     private void updateDeliveryQueueSize() {

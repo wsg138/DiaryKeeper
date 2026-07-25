@@ -5,6 +5,8 @@ import com.p2wn.diary.logic.PerformanceMonitor;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
+import org.bukkit.Bukkit;
+import org.bukkit.Material;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.scheduler.BukkitTask;
@@ -66,6 +68,7 @@ public final class DiaryStore {
     private CompletableFuture<Void> runningSave;
     private BukkitTask autosaveTask;
     private PerformanceMonitor performanceMonitor;
+    private long lastPruneAt;
 
     public DiaryStore(Plugin plugin) {
         this.plugin = plugin;
@@ -88,13 +91,17 @@ public final class DiaryStore {
         loadTrackedDiaries(data.getConfigurationSection("trackedDiaries"));
         rebuildLocationIndexes();
         loadPurgeOperations(data.getConfigurationSection("purgeOperations"));
+        reconcileCompetingPurgeOperations();
         loadLegacyVoidQueue(data.getConfigurationSection("voidQueue"));
     }
 
     public void reloadAutosave() {
         stopAutosave();
         int interval = Math.max(20, plugin.getConfig().getInt("storage.save-interval-ticks", 1200));
-        autosaveTask = plugin.getServer().getScheduler().runTaskTimer(plugin, this::flushIfDirty, interval, interval);
+        autosaveTask = plugin.getServer().getScheduler().runTaskTimer(plugin, () -> {
+            pruneRetainedState();
+            flushIfDirty();
+        }, interval, interval);
     }
 
     public void setPerformanceMonitor(PerformanceMonitor performanceMonitor) {
@@ -157,12 +164,25 @@ public final class DiaryStore {
     }
 
     public void queueDelivery(UUID playerId, DeliveryReason reason, ItemStack item) {
-        if (item == null || item.getType().isAir()) {
+        queueDelivery(playerId, reason, item, null);
+    }
+
+    public void queueDelivery(UUID playerId, DeliveryReason reason, ItemStack item, UUID token) {
+        if (item == null || item.getType() == Material.AIR) {
             return;
         }
         PlayerRecord record = getOrCreateRecord(playerId);
-        record.pendingDeliveries.addLast(new PendingDelivery(reason, item));
+        if (token != null && record.pendingDeliveries.stream().anyMatch(delivery -> token.equals(delivery.token()))) {
+            return;
+        }
+        record.pendingDeliveries.addLast(new PendingDelivery(reason, item, token));
         markDirty();
+    }
+
+    public boolean hasPendingDeliveryToken(UUID token) {
+        return token != null && records.values().stream()
+                .flatMap(record -> record.pendingDeliveries.stream())
+                .anyMatch(delivery -> token.equals(delivery.token()));
     }
 
     public List<PendingDelivery> getPendingDeliveries(UUID playerId, int limit) {
@@ -336,6 +356,7 @@ public final class DiaryStore {
             }
         }
         if (changed) {
+            diaryRecords.values().forEach(record -> record.location = mostRecentActive(record.locations));
             rebuildLocationIndexes();
             markDirty();
         }
@@ -357,6 +378,7 @@ public final class DiaryStore {
             }
         }
         if (changed) {
+            diaryRecords.values().forEach(record -> record.location = mostRecentActive(record.locations));
             rebuildLocationIndexes();
             markDirty();
         }
@@ -377,6 +399,7 @@ public final class DiaryStore {
             }
         }
         if (changed) {
+            state.location = mostRecentActive(state.locations);
             rebuildLocationIndexes();
             markDirty();
         }
@@ -412,7 +435,7 @@ public final class DiaryStore {
             return null;
         }
         return new TrackedDiaryRecord(diaryId, state.ownerUuid, state.ownerName,
-                state.snapshot == null ? null : state.snapshot.clone(), state.location,
+                state.snapshot == null ? null : state.snapshot.clone(), mostRecentActive(state.locations),
                 state.locations, state.snapshotUpdatedAt);
     }
 
@@ -425,6 +448,7 @@ public final class DiaryStore {
     }
 
     public void addPurgeOperation(PurgeOperation operation) {
+        operation.attachDirtyCallback(this::markDirty);
         purgeOperations.put(operation.operationId(), operation);
         markDirty();
     }
@@ -473,12 +497,67 @@ public final class DiaryStore {
         if (exactPlayerDiary != null) {
             return exactPlayerDiary;
         }
-        for (String diaryId : diaryRecords.keySet()) {
-            if (diaryId.startsWith(query)) {
-                return diaryId;
+        List<String> matches = diaryRecords.keySet().stream().filter(id -> id.startsWith(query)).limit(2).toList();
+        return matches.size() == 1 ? matches.getFirst() : null;
+    }
+
+    public boolean isAmbiguousDiaryIdPrefix(String query) {
+        return query != null && diaryRecords.keySet().stream().filter(id -> id.startsWith(query)).limit(2).count() > 1;
+    }
+
+    public PurgeOperation getActivePurgeOperation(String diaryId) {
+        return purgeOperations.values().stream()
+                .filter(operation -> operation.diaryId().equals(diaryId) && !operation.terminal())
+                .findFirst().orElse(null);
+    }
+
+    public void reconcileCompetingPurgeOperations() {
+        Map<String, List<PurgeOperation>> activeByDiary = new HashMap<>();
+        getActivePurgeOperations().forEach(operation ->
+                activeByDiary.computeIfAbsent(operation.diaryId(), ignored -> new ArrayList<>()).add(operation));
+        long now = Instant.now().getEpochSecond();
+        for (List<PurgeOperation> operations : activeByDiary.values()) {
+            if (operations.size() < 2) {
+                continue;
+            }
+            operations.sort((left, right) -> {
+                if (left.restorationOccurred() != right.restorationOccurred()) {
+                    return left.restorationOccurred() ? -1 : 1;
+                }
+                return Long.compare(left.startedAt(), right.startedAt());
+            });
+            for (int i = 1; i < operations.size(); i++) {
+                PurgeOperation cancelled = operations.get(i);
+                cancelled.addError("Cancelled during migration because another active purge owns this diary");
+                cancelled.setState(PurgeState.CANCELLED);
+                cancelled.setCompletedAt(now);
             }
         }
-        return null;
+    }
+
+    public Set<UUID> getCredibleOfflineHolders(String diaryId) {
+        Set<UUID> holders = new HashSet<>();
+        DiaryRecordState state = diaryRecords.get(diaryId);
+        if (state != null) {
+            state.locations.stream().map(DiaryLocationRecord::holderUuid).filter(Objects::nonNull).forEach(holders::add);
+        }
+        records.forEach((playerId, record) -> {
+            if (record.pendingRemovals.stream().anyMatch(removal -> diaryId.equals(removal.diaryId()))
+                    || record.pendingDeliveries.stream().anyMatch(delivery -> diaryId.equals(extractDiaryId(delivery.item())))) {
+                holders.add(playerId);
+            }
+        });
+        return holders;
+    }
+
+    public void reconcileLegacyPendingRemovals(String diaryId) {
+        boolean changed = false;
+        for (PlayerRecord record : records.values()) {
+            changed |= record.pendingRemovals.removeIf(removal -> diaryId.equals(removal.diaryId()));
+        }
+        if (changed) {
+            markDirty();
+        }
     }
 
     public Set<UUID> getTrackedOwners() {
@@ -520,6 +599,48 @@ public final class DiaryStore {
         }
     }
 
+    public void pruneRetainedState() {
+        long now = Instant.now().getEpochSecond();
+        if (now - lastPruneAt < 3600L) {
+            return;
+        }
+        lastPruneAt = now;
+        long operationCutoff = now - Math.max(1L,
+                plugin.getConfig().getLong("purge.retention.completed-operation-days", 30L)) * 86400L;
+        boolean changed = pruneOperations(now, operationCutoff);
+        long locationCutoff = now - Math.max(1L,
+                plugin.getConfig().getLong("purge.retention.inactive-location-days", 90L)) * 86400L;
+        int maxLocations = Math.max(1,
+                plugin.getConfig().getInt("purge.retention.max-locations-per-diary", 100));
+        changed |= pruneLocations(locationCutoff, maxLocations);
+        if (changed) {
+            rebuildLocationIndexes();
+            markDirty();
+        }
+    }
+
+    private boolean pruneOperations(long now, long cutoff) {
+        return purgeOperations.values().removeIf(operation ->
+                operation.terminal() && operation.completedAt() > 0L
+                        && operation.completedAt() < cutoff && operation.watchUntil() < now);
+    }
+
+    private boolean pruneLocations(long cutoff, int maxLocations) {
+        boolean changed = false;
+        for (DiaryRecordState state : diaryRecords.values()) {
+            changed |= state.locations.removeIf(location ->
+                    !location.active() && location.lastSeenAtEpochSeconds() < cutoff);
+            if (state.locations.size() > maxLocations) {
+                state.locations.sort((left, right) -> Long.compare(
+                        right.lastSeenAtEpochSeconds(), left.lastSeenAtEpochSeconds()));
+                state.locations.subList(maxLocations, state.locations.size()).clear();
+                changed = true;
+            }
+            state.location = mostRecentActive(state.locations);
+        }
+        return changed;
+    }
+
     public void flushNow() {
         synchronized (stateLock) {
             if (!dirty) {
@@ -557,6 +678,29 @@ public final class DiaryStore {
             performanceMonitor.yamlSaveRunning(1);
         }
         plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> saveSnapshot(snapshot, future, false));
+    }
+
+    /**
+     * Persists the current version and completes only after the atomic move succeeds.
+     * Callers must not touch Bukkit state from the completion thread.
+     */
+    public CompletableFuture<Void> flushDurably() {
+        synchronized (stateLock) {
+            if (!dirty && runningSave == null) {
+                return CompletableFuture.completedFuture(null);
+            }
+            if (runningSave != null) {
+                return runningSave.thenCompose(ignored -> flushDurably());
+            }
+        }
+        flushNow();
+        synchronized (stateLock) {
+            if (runningSave != null) {
+                return runningSave;
+            }
+            return dirty ? CompletableFuture.failedFuture(new IOException("Unable to persist diaries.yml"))
+                    : CompletableFuture.completedFuture(null);
+        }
     }
 
     public void flushNowBlocking(String reason) {
@@ -600,6 +744,7 @@ public final class DiaryStore {
                 String basePath = "pendingDeliveries." + playerKey + "." + deliveryIndex++;
                 data.set(basePath + ".reason", delivery.reason().name());
                 data.set(basePath + ".itemBase64", ItemIO.toBase64(delivery.item()));
+                data.set(basePath + ".token", delivery.token() == null ? null : delivery.token().toString());
             }
 
             int removalIndex = 0;
@@ -663,7 +808,11 @@ public final class DiaryStore {
                 performanceMonitor.yamlSaveRunning(0);
             }
             if (future != null) {
-                future.complete(null);
+                if (success) {
+                    future.complete(null);
+                } else {
+                    future.completeExceptionally(new IOException("diaries.yml save failed"));
+                }
             }
             if (success && blocking) {
                 plugin.getLogger().info("DiaryKeeper diaries.yml flush completed during blocking flush.");
@@ -759,7 +908,8 @@ public final class DiaryStore {
                     String rawReason = pending.getString(basePath + ".reason", DeliveryReason.VOID_RETURN.name());
                     ItemStack item = readItem(pending, basePath + ".itemBase64", basePath + ".item");
                     if (item != null) {
-                        record.pendingDeliveries.addLast(new PendingDelivery(parseReason(rawReason), item));
+                        record.pendingDeliveries.addLast(new PendingDelivery(
+                                parseReason(rawReason), item, parseUuid(pending.getString(basePath + ".token"))));
                     }
                 }
             }
@@ -833,6 +983,15 @@ public final class DiaryStore {
             if (state.locations.isEmpty() && state.location != null) {
                 state.locations.add(state.location);
             }
+            for (int i = 0; i < state.locations.size(); i++) {
+                DiaryLocationRecord location = state.locations.get(i);
+                if (location.worldUuid() == null && location.worldName() != null
+                        && Bukkit.getWorld(location.worldName()) != null) {
+                    state.locations.set(i, location.withWorldUuid(Bukkit.getWorld(location.worldName()).getUID()));
+                    markDirty();
+                }
+            }
+            state.location = mostRecentActive(state.locations);
             diaryRecords.put(diaryId, state);
         }
     }
@@ -854,6 +1013,9 @@ public final class DiaryStore {
         data.set(base + ".replacementHolder", operation.replacementHolder() == null ? null : operation.replacementHolder().toString());
         data.set(base + ".watchUntil", operation.watchUntil());
         data.set(base + ".partialRestoreConfirmed", operation.partialRestoreConfirmed());
+        data.set(base + ".deliveryToken", operation.deliveryToken() == null ? null : operation.deliveryToken().toString());
+        data.set(base + ".verificationRequired", operation.verificationRequired());
+        data.set(base + ".verificationRemovedBaseline", operation.verificationRemovedBaseline());
         data.set(base + ".pendingPlayers", operation.pendingPlayers().stream().map(UUID::toString).toList());
         data.set(base + ".errors", operation.errors());
         for (Map.Entry<String, Integer> count : operation.removedByLocation().entrySet()) {
@@ -872,10 +1034,6 @@ public final class DiaryStore {
             data.set(targetBase + ".completed", target.completed());
             data.set(targetBase + ".attempts", target.attempts());
             data.set(targetBase + ".error", target.error());
-            data.set(targetBase + ".nextBlockEntityIndex", target.nextBlockEntityIndex());
-            data.set(targetBase + ".nextEntityIndex", target.nextEntityIndex());
-            data.set(targetBase + ".processedEntityUuids",
-                    target.processedEntityUuids().stream().map(UUID::toString).toList());
         }
     }
 
@@ -915,14 +1073,14 @@ public final class DiaryStore {
             for (String playerId : section.getStringList("pendingPlayers")) {
                 UUID uuid = parseUuid(playerId);
                 if (uuid != null) {
-                    operation.pendingPlayers().add(uuid);
+                    operation.loadPendingPlayer(uuid);
                 }
             }
-            operation.errors().addAll(section.getStringList("errors"));
+            section.getStringList("errors").forEach(operation::loadError);
             ConfigurationSection removed = section.getConfigurationSection("removed");
             if (removed != null) {
                 for (String location : removed.getKeys(false)) {
-                    operation.removedByLocation().put(location, removed.getInt(location));
+                    operation.loadRemoved(location, removed.getInt(location));
                 }
             }
             ConfigurationSection chunks = section.getConfigurationSection("chunks");
@@ -944,20 +1102,22 @@ public final class DiaryStore {
                             targetSection.contains("blockZ") ? targetSection.getInt("blockZ") : null
                     );
                     target.loadState(targetSection.getBoolean("completed"),
-                            targetSection.getInt("attempts"), targetSection.getString("error"),
-                            targetSection.getInt("nextBlockEntityIndex"),
-                            targetSection.getInt("nextEntityIndex"));
-                    for (String entityId : targetSection.getStringList("processedEntityUuids")) {
-                        UUID uuid = parseUuid(entityId);
-                        if (uuid != null) {
-                            target.processedEntityUuids().add(uuid);
-                        }
-                    }
-                    operation.chunkTargets().add(target);
+                            targetSection.getInt("attempts"), targetSection.getString("error"));
+                    operation.loadChunkTarget(target);
                 }
             }
+            operation.setDeliveryToken(parseUuid(section.getString("deliveryToken")));
+            operation.setVerificationRequired(section.getBoolean("verificationRequired", true));
+            operation.setVerificationRemovedBaseline(section.getInt("verificationRemovedBaseline"));
+            operation.attachDirtyCallback(this::markDirty);
             purgeOperations.put(operationId, operation);
         }
+    }
+
+    private DiaryLocationRecord mostRecentActive(List<DiaryLocationRecord> locations) {
+        return locations.stream().filter(DiaryLocationRecord::active)
+                .max((left, right) -> Long.compare(
+                        left.lastSeenAtEpochSeconds(), right.lastSeenAtEpochSeconds())).orElse(null);
     }
 
     private <T extends Enum<T>> T parseEnum(Class<T> type, String raw, T fallback) {

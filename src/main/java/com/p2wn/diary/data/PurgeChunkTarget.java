@@ -1,9 +1,8 @@
 package com.p2wn.diary.data;
 
 import java.util.UUID;
-import java.util.LinkedHashSet;
-import java.util.Set;
 
+@SuppressWarnings("PMD.AvoidFieldNameMatchingMethodName")
 public final class PurgeChunkTarget {
 
     private final UUID worldUuid;
@@ -16,9 +15,7 @@ public final class PurgeChunkTarget {
     private boolean completed;
     private int attempts;
     private String error;
-    private int nextBlockEntityIndex;
-    private int nextEntityIndex;
-    private final Set<UUID> processedEntityUuids = new LinkedHashSet<>();
+    private transient Runnable dirtyCallback = () -> { };
 
     public PurgeChunkTarget(UUID worldUuid, String worldName, int chunkX, int chunkZ,
                             Integer blockX, Integer blockY, Integer blockZ) {
@@ -41,43 +38,37 @@ public final class PurgeChunkTarget {
     public boolean completed() { return completed; }
     public int attempts() { return attempts; }
     public String error() { return error; }
-    public int nextBlockEntityIndex() { return nextBlockEntityIndex; }
-    public int nextEntityIndex() { return nextEntityIndex; }
-    public Set<UUID> processedEntityUuids() { return processedEntityUuids; }
+    public void attachDirtyCallback(Runnable callback) { dirtyCallback = callback == null ? () -> { } : callback; }
 
     public void complete() {
         completed = true;
         error = null;
+        dirtyCallback.run();
     }
 
     public void finishWithError(String message) {
         completed = true;
         error = message;
+        dirtyCallback.run();
     }
 
     public void fail(String message) {
         attempts++;
         error = message;
+        dirtyCallback.run();
     }
 
-    public void loadState(boolean completed, int attempts, String error,
-                          int nextBlockEntityIndex, int nextEntityIndex) {
+    void loadState(boolean completed, int attempts, String error) {
         this.completed = completed;
         this.attempts = attempts;
         this.error = error;
-        this.nextBlockEntityIndex = nextBlockEntityIndex;
-        this.nextEntityIndex = nextEntityIndex;
-    }
-
-    public void advance(int blockIndex, int entityIndex) {
-        this.nextBlockEntityIndex = blockIndex;
-        this.nextEntityIndex = entityIndex;
     }
 
     public void resetForRetry() {
         completed = false;
         attempts = 0;
         error = null;
+        dirtyCallback.run();
     }
 
     public String key() {
