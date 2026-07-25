@@ -184,7 +184,7 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
         PurgeDestination destination = "owner".equals(mode) ? PurgeDestination.OWNER : PurgeDestination.ADMIN;
         PurgeOperation operation = plugin.diaryPurgeService().begin(record, destination,
                 sender instanceof Player player ? player : null);
-        sendOperationStarted(sender, operation);
+        sendOperationStarted(sender, operation, destination, sender instanceof Player player ? player.getUniqueId() : null);
         return true;
     }
 
@@ -245,15 +245,22 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
                 }
                 PurgeOperation operation = plugin.diaryPurgeService().begin(record, PurgeDestination.NONE,
                         sender instanceof Player player ? player : null);
-                sendOperationStarted(sender, operation);
+                sendOperationStarted(sender, operation, PurgeDestination.NONE,
+                        sender instanceof Player player ? player.getUniqueId() : null);
                 yield true;
             }
         };
     }
 
-    private void sendOperationStarted(CommandSender sender, PurgeOperation operation) {
+    private void sendOperationStarted(CommandSender sender, PurgeOperation operation, PurgeDestination requestedDestination,
+                                      UUID requestedAdmin) {
         if (operation == null) {
             sender.sendMessage(plugin.configManager().msg("purge.start-failed"));
+            return;
+        }
+        if (operation.destination() != requestedDestination || !java.util.Objects.equals(operation.adminUuid(), requestedAdmin)) {
+            sender.sendMessage("§eNo new purge started. Existing operation §f" + operation.operationId()
+                    + " §edestination=§f" + operation.destination() + " §estate=§f" + operation.state());
             return;
         }
         sender.sendMessage(plugin.configManager().msg("purge.started", java.util.Map.of(

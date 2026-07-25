@@ -31,10 +31,12 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 @SuppressWarnings({"PMD.UseConcurrentHashMap", "PMD.AvoidInstantiatingObjectsInLoops", "PMD.NullAssignment"})
@@ -302,6 +304,8 @@ public final class DuplicateWatcher {
     }
 
     private void scanBlockContainers(Chunk chunk, List<Occurrence> occurrences) {
+        String chunkPrefix = chunk.getWorld().getUID() + ":" + chunk.getX() + ":" + chunk.getZ() + ":";
+        Set<String> observedContainerKeys = new HashSet<>();
         for (BlockState state : chunk.getTileEntities()) {
             if (!(state instanceof Container container)) {
                 continue;
@@ -309,8 +313,8 @@ public final class DuplicateWatcher {
             List<Occurrence> found = new ArrayList<>();
             scanInventoryContents(container.getInventory().getContents(), "container", "block_container",
                     coordsOf(state.getLocation()), found);
-            String key = chunk.getWorld().getUID() + ":" + chunk.getX() + ":" + chunk.getZ()
-                    + ":" + state.getX() + ":" + state.getY() + ":" + state.getZ();
+            String key = chunkPrefix + state.getX() + ":" + state.getY() + ":" + state.getZ();
+            observedContainerKeys.add(key);
             if (found.isEmpty()) {
                 blockContainerSnapshots.remove(key);
             } else {
@@ -318,6 +322,8 @@ public final class DuplicateWatcher {
                 occurrences.addAll(found);
             }
         }
+        blockContainerSnapshots.keySet().removeIf(key -> key.startsWith(chunkPrefix)
+                && !observedContainerKeys.contains(key));
     }
 
     private record ChunkScanResult(List<Occurrence> occurrences, int nextEntityIndex, boolean incomplete) {}

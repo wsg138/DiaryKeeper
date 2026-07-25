@@ -6,9 +6,13 @@ import com.p2wn.diary.data.DeliveryReason;
 import com.p2wn.diary.data.DiaryStore;
 import com.p2wn.diary.data.PendingDelivery;
 import org.bukkit.Bukkit;
+import org.bukkit.Material;
+import org.bukkit.block.ShulkerBox;
 import org.bukkit.OfflinePlayer;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.BlockStateMeta;
+import org.bukkit.inventory.meta.BundleMeta;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.scheduler.BukkitTask;
@@ -183,16 +187,49 @@ public final class DeliveryService {
         return diaryService.getDiaryId(item);
     }
 
-    private boolean hasDeliveredToken(Player player, UUID token) {
+    boolean hasDeliveredToken(Player player, UUID token) {
         if (token == null || !(plugin instanceof com.p2wn.diary.DiaryPlugin diaryPlugin)) {
             return false;
         }
         String value = token.toString();
-        for (ItemStack item : player.getInventory().getContents()) {
-            if (item != null && item.hasItemMeta() && value.equals(item.getItemMeta().getPersistentDataContainer()
-                    .get(diaryPlugin.diaryKeys().deliveryToken(), PersistentDataType.STRING))) {
+        int maxDepth = Math.max(1, plugin.getConfig().getInt("delivery.token-search-depth", 4));
+        return containsDeliveryToken(player.getInventory().getContents(), value, diaryPlugin, maxDepth)
+                || containsDeliveryToken(player.getEnderChest().getContents(), value, diaryPlugin, maxDepth);
+    }
+
+    private boolean containsDeliveryToken(ItemStack[] items, String token, com.p2wn.diary.DiaryPlugin diaryPlugin,
+                                          int maxDepth) {
+        for (ItemStack item : items) {
+            if (containsDeliveryToken(item, token, diaryPlugin, 0, maxDepth)) {
                 return true;
             }
+        }
+        return false;
+    }
+
+    private boolean containsDeliveryToken(ItemStack item, String token, com.p2wn.diary.DiaryPlugin diaryPlugin,
+                                          int depth, int maxDepth) {
+        if (item == null || item.getType() == Material.AIR || !item.hasItemMeta()) {
+            return false;
+        }
+        var meta = item.getItemMeta();
+        if (token.equals(meta.getPersistentDataContainer()
+                .get(diaryPlugin.diaryKeys().deliveryToken(), PersistentDataType.STRING))) {
+            return true;
+        }
+        if (depth >= maxDepth) {
+            return false;
+        }
+        if (item.getType() == Material.BUNDLE && meta instanceof BundleMeta bundleMeta) {
+            for (ItemStack nested : bundleMeta.getItems()) {
+                if (containsDeliveryToken(nested, token, diaryPlugin, depth + 1, maxDepth)) {
+                    return true;
+                }
+            }
+        }
+        if (meta instanceof BlockStateMeta blockStateMeta
+                && blockStateMeta.getBlockState() instanceof ShulkerBox shulkerBox) {
+            return containsDeliveryToken(shulkerBox.getInventory().getContents(), token, diaryPlugin, maxDepth - depth - 1);
         }
         return false;
     }

@@ -1,9 +1,11 @@
 package com.p2wn.diary.logic;
 
 import com.p2wn.diary.DiaryPlugin;
+import com.p2wn.diary.DiaryKeys;
 import com.p2wn.diary.data.DiaryAnalyticsStore;
 import com.p2wn.diary.data.DiaryStore;
 import com.p2wn.diary.data.PurgeDestination;
+import com.p2wn.diary.data.PurgeChunkTarget;
 import com.p2wn.diary.data.PurgeOperation;
 import com.p2wn.diary.data.TrackedDiaryRecord;
 import com.p2wn.diary.config.ConfigManager;
@@ -11,6 +13,9 @@ import com.p2wn.diary.item.DiaryItem;
 import org.bukkit.Bukkit;
 import org.bukkit.OfflinePlayer;
 import org.bukkit.Chunk;
+import org.bukkit.Material;
+import org.bukkit.NamespacedKey;
+import org.bukkit.block.ShulkerBox;
 import org.bukkit.World;
 import org.bukkit.block.Container;
 import org.bukkit.inventory.Inventory;
@@ -18,6 +23,10 @@ import org.bukkit.plugin.Plugin;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.BlockStateMeta;
+import org.bukkit.inventory.meta.BundleMeta;
+import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.persistence.PersistentDataContainer;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
 
@@ -26,9 +35,10 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.logging.Logger;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 
-import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
@@ -53,6 +63,38 @@ class DiaryPurgeServiceTest {
     }
 
     @Test
+    void completedChunkTargetIsResetAndRequeuedWhenChunkLoadsAgain() throws Exception {
+        Fixture fixture = fixture();
+        UUID worldId = UUID.randomUUID();
+        PurgeOperation operation = operation(PurgeDestination.OWNER);
+        PurgeChunkTarget target = new PurgeChunkTarget(worldId, "world", 3, -4, null, null, null);
+        operation.addChunkTarget(target);
+        target.complete();
+        when(fixture.store.getActivePurgeOperations()).thenReturn(List.of(operation));
+        Chunk chunk = mock(Chunk.class);
+        World world = mock(World.class);
+        org.bukkit.scheduler.BukkitScheduler scheduler = mock(org.bukkit.scheduler.BukkitScheduler.class);
+        when(chunk.getWorld()).thenReturn(world);
+        when(chunk.getX()).thenReturn(3);
+        when(chunk.getZ()).thenReturn(-4);
+        when(world.getUID()).thenReturn(worldId);
+        when(world.getName()).thenReturn("world");
+        when(scheduler.runTaskTimer(any(), any(Runnable.class), anyLong(), anyLong())).thenReturn(mock(org.bukkit.scheduler.BukkitTask.class));
+
+        try (MockedStatic<Bukkit> bukkit = mockStatic(Bukkit.class)) {
+            bukkit.when(Bukkit::getScheduler).thenReturn(scheduler);
+            fixture.service.onChunkLoad(chunk);
+        }
+
+        assertFalse(target.completed());
+        assertTrue(operation.verificationRequired());
+        assertEquals(1, operation.chunkTargets().size());
+        Field queued = DiaryPurgeService.class.getDeclaredField("queuedChunkKeys");
+        queued.setAccessible(true);
+        assertEquals(1, ((Set<?>) queued.get(fixture.service)).size());
+    }
+
+    @Test
     void intentionalDuplicateAlwaysCreatesASeparateTokenizedDelivery() {
         Fixture fixture = fixture();
         Player admin = mock(Player.class);
@@ -62,9 +104,12 @@ class DiaryPurgeServiceTest {
         try (MockedStatic<Bukkit> bukkit = mockStatic(Bukkit.class)) {
             bukkit.when(() -> Bukkit.getOfflinePlayer(any(UUID.class))).thenReturn(offline);
             fixture.service.restoreDuplicate(record, admin);
+            fixture.service.restoreDuplicate(record, admin);
         }
-        verify(fixture.delivery).queue(eq(record.ownerUuid()), eq(com.p2wn.diary.data.DeliveryReason.RESTORE_DUPLICATE),
-                any(ItemStack.class), any(UUID.class));
+        org.mockito.ArgumentCaptor<UUID> tokens = org.mockito.ArgumentCaptor.forClass(UUID.class);
+        verify(fixture.delivery, times(2)).queue(eq(record.ownerUuid()), eq(com.p2wn.diary.data.DeliveryReason.RESTORE_DUPLICATE),
+                any(ItemStack.class), tokens.capture());
+        assertNotEquals(tokens.getAllValues().get(0), tokens.getAllValues().get(1));
     }
 
     @Test
@@ -102,6 +147,50 @@ class DiaryPurgeServiceTest {
     }
 
     @Test
+    void chunkContainerSnapshotsAreReplacedWithoutTouchingAnotherChunk() throws Exception {
+        DiaryPlugin plugin = mock(DiaryPlugin.class);
+        ConfigManager config = mock(ConfigManager.class);
+        FileConfiguration yaml = mock(FileConfiguration.class);
+        DiaryItem diaryItem = mock(DiaryItem.class);
+        when(config.cfg()).thenReturn(yaml);
+        DuplicateWatcher watcher = new DuplicateWatcher(plugin, config, diaryItem);
+        Chunk first = chunkWithDiary(UUID.randomUUID(), 1, 2, diaryItem);
+        Chunk second = chunkWithDiary(UUID.randomUUID(), 3, 4, diaryItem);
+        Method scan = DuplicateWatcher.class.getDeclaredMethod("scanChunkItems", Chunk.class, int.class, int.class);
+        scan.setAccessible(true);
+        scan.invoke(watcher, first, 0, 100);
+        scan.invoke(watcher, second, 0, 100);
+        when(first.getTileEntities()).thenReturn(new org.bukkit.block.BlockState[0]);
+        scan.invoke(watcher, first, 0, 100);
+
+        Field snapshots = DuplicateWatcher.class.getDeclaredField("blockContainerSnapshots");
+        snapshots.setAccessible(true);
+        Map<?, ?> values = (Map<?, ?>) snapshots.get(watcher);
+        assertEquals(1, values.size());
+        assertTrue(values.keySet().iterator().next().toString().contains(":3:4:"));
+    }
+
+    @Test
+    void diaryEnteringPreviouslyScannedChunkReplacesItsEmptySnapshot() throws Exception {
+        DiaryPlugin plugin = mock(DiaryPlugin.class);
+        ConfigManager config = mock(ConfigManager.class);
+        FileConfiguration yaml = mock(FileConfiguration.class);
+        DiaryItem diaryItem = mock(DiaryItem.class);
+        when(config.cfg()).thenReturn(yaml);
+        DuplicateWatcher watcher = new DuplicateWatcher(plugin, config, diaryItem);
+        Chunk chunk = chunkWithDiary(UUID.randomUUID(), 5, 6, diaryItem);
+        when(chunk.getTileEntities()).thenReturn(new org.bukkit.block.BlockState[0]);
+        Method scan = DuplicateWatcher.class.getDeclaredMethod("scanChunkItems", Chunk.class, int.class, int.class);
+        scan.setAccessible(true);
+        scan.invoke(watcher, chunk, 0, 100);
+        assertTrue(containerSnapshots(watcher).isEmpty());
+
+        Chunk populated = chunkWithDiary(chunk.getWorld().getUID(), 5, 6, diaryItem);
+        scan.invoke(watcher, populated, 0, 100);
+        assertEquals(1, containerSnapshots(watcher).size());
+    }
+
+    @Test
     void fullInventoryKeepsTokenizedRestoreInThePersistentQueue() {
         Plugin plugin = mock(Plugin.class);
         DiaryStore store = mock(DiaryStore.class);
@@ -128,6 +217,94 @@ class DiaryPurgeServiceTest {
         verify(store, never()).removeFirstPendingDeliveries(any(), anyInt());
     }
 
+    @Test
+    void deliveredTokenInEnderChestPreventsRestartRedelivery() {
+        DiaryPlugin plugin = mock(DiaryPlugin.class);
+        DiaryStore store = mock(DiaryStore.class);
+        FileConfiguration config = mock(FileConfiguration.class);
+        DiaryKeys keys = mock(DiaryKeys.class);
+        NamespacedKey deliveryKey = mock(NamespacedKey.class);
+        UUID playerId = UUID.randomUUID();
+        UUID token = UUID.randomUUID();
+        Player player = mock(Player.class);
+        org.bukkit.inventory.PlayerInventory inventory = mock(org.bukkit.inventory.PlayerInventory.class);
+        Inventory enderChest = mock(Inventory.class);
+        ItemStack delivered = tokenizedItem(token, keys, deliveryKey);
+        ItemStack queued = mock(ItemStack.class);
+        when(queued.clone()).thenReturn(queued);
+        when(plugin.getConfig()).thenReturn(config);
+        when(config.getInt(anyString(), anyInt())).thenAnswer(invocation -> invocation.getArgument(1));
+        when(plugin.diaryKeys()).thenReturn(keys);
+        when(keys.deliveryToken()).thenReturn(deliveryKey);
+        when(player.isOnline()).thenReturn(true);
+        when(player.getInventory()).thenReturn(inventory);
+        when(player.getEnderChest()).thenReturn(enderChest);
+        when(player.getUniqueId()).thenReturn(playerId);
+        when(player.getName()).thenReturn("player");
+        when(inventory.getContents()).thenReturn(new ItemStack[0]);
+        when(enderChest.getContents()).thenReturn(new ItemStack[]{delivered});
+        when(store.getPlayersWithPendingDeliveries()).thenReturn(Set.of(playerId));
+        com.p2wn.diary.data.PendingDelivery pending = new com.p2wn.diary.data.PendingDelivery(
+                com.p2wn.diary.data.DeliveryReason.RESTORE_OWNER, queued, token);
+        when(store.getPendingDeliveries(playerId, 2)).thenReturn(List.of(pending));
+        DeliveryService service = new DeliveryService(plugin, store);
+        service.setDiaryService(mock(DiaryService.class));
+
+        try (MockedStatic<Bukkit> bukkit = mockStatic(Bukkit.class)) {
+            bukkit.when(() -> Bukkit.getPlayer(playerId)).thenReturn(player);
+            service.tick();
+        }
+
+        verify(store).removeFirstPendingDeliveries(playerId, 1);
+        verify(inventory, never()).addItem(any());
+    }
+
+    @Test
+    void deliveredTokenNestedInBundleOrShulkerIsDetected() {
+        DiaryPlugin plugin = mock(DiaryPlugin.class);
+        DiaryStore store = mock(DiaryStore.class);
+        FileConfiguration config = mock(FileConfiguration.class);
+        DiaryKeys keys = mock(DiaryKeys.class);
+        NamespacedKey deliveryKey = mock(NamespacedKey.class);
+        UUID token = UUID.randomUUID();
+        Player player = mock(Player.class);
+        org.bukkit.inventory.PlayerInventory inventory = mock(org.bukkit.inventory.PlayerInventory.class);
+        Inventory enderChest = mock(Inventory.class);
+        ItemStack delivered = tokenizedItem(token, keys, deliveryKey);
+        ItemStack bundle = mock(ItemStack.class);
+        BundleMeta bundleMeta = mock(BundleMeta.class);
+        ItemStack shulker = mock(ItemStack.class);
+        BlockStateMeta shulkerMeta = mock(BlockStateMeta.class);
+        ShulkerBox shulkerBox = mock(ShulkerBox.class);
+        Inventory shulkerInventory = mock(Inventory.class);
+        when(plugin.getConfig()).thenReturn(config);
+        when(config.getInt(anyString(), anyInt())).thenAnswer(invocation -> invocation.getArgument(1));
+        when(plugin.diaryKeys()).thenReturn(keys);
+        when(keys.deliveryToken()).thenReturn(deliveryKey);
+        when(player.getInventory()).thenReturn(inventory);
+        when(player.getEnderChest()).thenReturn(enderChest);
+        when(inventory.getContents()).thenReturn(new ItemStack[]{bundle});
+        when(enderChest.getContents()).thenReturn(new ItemStack[]{shulker});
+        when(bundle.getType()).thenReturn(Material.BUNDLE);
+        when(bundle.hasItemMeta()).thenReturn(true);
+        when(bundle.getItemMeta()).thenReturn(bundleMeta);
+        when(bundleMeta.getPersistentDataContainer()).thenReturn(mock(PersistentDataContainer.class));
+        when(bundleMeta.getItems()).thenReturn(List.of());
+        when(shulker.getType()).thenReturn(Material.SHULKER_BOX);
+        when(shulker.hasItemMeta()).thenReturn(true);
+        when(shulker.getItemMeta()).thenReturn(shulkerMeta);
+        when(shulkerMeta.getPersistentDataContainer()).thenReturn(mock(PersistentDataContainer.class));
+        when(shulkerMeta.getBlockState()).thenReturn(shulkerBox);
+        when(shulkerBox.getInventory()).thenReturn(shulkerInventory);
+        when(shulkerInventory.getContents()).thenReturn(new ItemStack[]{delivered});
+
+        DeliveryService service = new DeliveryService(plugin, store);
+        assertTrue(service.hasDeliveredToken(player, token));
+        when(enderChest.getContents()).thenReturn(new ItemStack[0]);
+        when(bundleMeta.getItems()).thenReturn(List.of(delivered));
+        assertTrue(service.hasDeliveredToken(player, token));
+    }
+
     private Fixture fixture() {
         DiaryPlugin plugin = mock(DiaryPlugin.class);
         DiaryStore store = mock(DiaryStore.class);
@@ -143,6 +320,46 @@ class DiaryPurgeServiceTest {
         when(plugin.getLogger()).thenReturn(Logger.getAnonymousLogger());
         when(config.getInt(anyString(), anyInt())).thenAnswer(invocation -> invocation.getArgument(1));
         return new Fixture(store, delivery, new DiaryPurgeService(plugin));
+    }
+
+    private Chunk chunkWithDiary(UUID worldId, int x, int z, DiaryItem diaryItem) {
+        ItemStack diary = mock(ItemStack.class);
+        org.bukkit.Material material = mock(org.bukkit.Material.class);
+        when(material.isAir()).thenReturn(false);
+        when(diary.getType()).thenReturn(material);
+        when(diaryItem.isDiary(diary)).thenReturn(true);
+        when(diaryItem.getDiaryId(diary)).thenReturn("diary");
+        Inventory inventory = mock(Inventory.class);
+        when(inventory.getContents()).thenReturn(new ItemStack[]{diary});
+        Container chest = mock(Container.class);
+        when(chest.getInventory()).thenReturn(inventory);
+        Chunk chunk = mock(Chunk.class);
+        World world = mock(World.class);
+        when(world.getUID()).thenReturn(worldId);
+        when(chunk.getWorld()).thenReturn(world);
+        when(chunk.getX()).thenReturn(x);
+        when(chunk.getZ()).thenReturn(z);
+        when(chunk.getTileEntities()).thenReturn(new org.bukkit.block.BlockState[]{chest});
+        when(chunk.getEntities()).thenReturn(new org.bukkit.entity.Entity[0]);
+        return chunk;
+    }
+
+    private ItemStack tokenizedItem(UUID token, DiaryKeys keys, NamespacedKey deliveryKey) {
+        ItemStack item = mock(ItemStack.class);
+        ItemMeta meta = mock(ItemMeta.class);
+        PersistentDataContainer data = mock(PersistentDataContainer.class);
+        when(item.getType()).thenReturn(Material.WRITABLE_BOOK);
+        when(item.hasItemMeta()).thenReturn(true);
+        when(item.getItemMeta()).thenReturn(meta);
+        when(meta.getPersistentDataContainer()).thenReturn(data);
+        when(data.get(deliveryKey, org.bukkit.persistence.PersistentDataType.STRING)).thenReturn(token.toString());
+        return item;
+    }
+
+    private Map<?, ?> containerSnapshots(DuplicateWatcher watcher) throws Exception {
+        Field snapshots = DuplicateWatcher.class.getDeclaredField("blockContainerSnapshots");
+        snapshots.setAccessible(true);
+        return (Map<?, ?>) snapshots.get(watcher);
     }
 
     private TrackedDiaryRecord record() {

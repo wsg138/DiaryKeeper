@@ -77,6 +77,7 @@ delivery:
   retry-interval-ticks: 20
   max-players-per-tick: 10
   max-items-per-player-per-tick: 2
+  token-search-depth: 4
 
 # Optional Plan Player Analytics integration.
 # DiaryKeeper keeps this data itself first, then exposes a focused subset to Plan when installed.

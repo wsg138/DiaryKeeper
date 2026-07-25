@@ -111,6 +111,12 @@ public final class RestoreGuiListener implements Listener {
         PurgeDestination destination = holder.action() == Action.OWNER
                 ? PurgeDestination.OWNER : PurgeDestination.ADMIN;
         PurgeOperation operation = plugin.diaryPurgeService().begin(holder.record(), destination, player);
+        if (operation.destination() != destination || !java.util.Objects.equals(operation.adminUuid(), player.getUniqueId())) {
+            player.sendMessage("§eNo new purge started. Existing operation §f" + operation.operationId()
+                    + " §edestination=§f" + operation.destination() + " §estate=§f" + operation.state());
+            player.closeInventory();
+            return;
+        }
         player.sendMessage(plugin.configManager().msg("purge.started", java.util.Map.of(
                 "operation", operation.operationId().toString(),
                 "state", operation.state().name(),

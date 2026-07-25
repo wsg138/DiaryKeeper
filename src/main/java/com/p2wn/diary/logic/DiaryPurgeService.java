@@ -193,17 +193,20 @@ public final class DiaryPurgeService {
 
     public void onChunkLoad(Chunk chunk) {
         for (PurgeOperation operation : store.getActivePurgeOperations()) {
-            addChunkTarget(operation, new PurgeChunkTarget(chunk.getWorld().getUID(), chunk.getWorld().getName(),
-                    chunk.getX(), chunk.getZ(), null, null, null));
-            for (PurgeChunkTarget target : operation.chunkTargets()) {
-                if (!target.completed()
-                        && target.chunkX() == chunk.getX()
-                        && target.chunkZ() == chunk.getZ()
-                        && sameWorld(target, chunk.getWorld())) {
-                    enqueueChunk(operation, target);
-                }
+            PurgeChunkTarget target = findChunkTarget(operation, chunk);
+            if (target == null) {
+                target = new PurgeChunkTarget(chunk.getWorld().getUID(), chunk.getWorld().getName(),
+                        chunk.getX(), chunk.getZ(), null, null, null);
+                operation.addChunkTarget(target);
+                analytics(DiaryAnalyticsEventType.PURGE_PENDING_CHUNK, operation, null, target.key());
+            } else {
+                target.resetForRetry();
             }
+            chunkWork.remove(chunkWorkKey(operation.operationId(), target));
+            operation.setVerificationRequired(true);
+            enqueueChunk(operation, target);
         }
+        ensureTask();
     }
 
     public PurgeOperation find(String query) {
@@ -642,10 +645,22 @@ public final class DiaryPurgeService {
     }
 
     private void enqueueChunk(PurgeOperation operation, PurgeChunkTarget target) {
-        String key = operation.operationId() + ":" + target.key();
+        String key = chunkWorkKey(operation.operationId(), target);
         if (queuedChunkKeys.add(key)) {
             chunkQueue.addLast(new ChunkTarget(operation.operationId(), target));
         }
+    }
+
+    private PurgeChunkTarget findChunkTarget(PurgeOperation operation, Chunk chunk) {
+        return operation.chunkTargets().stream()
+                .filter(target -> target.chunkX() == chunk.getX() && target.chunkZ() == chunk.getZ()
+                        && sameWorld(target, chunk.getWorld()))
+                .findFirst()
+                .orElse(null);
+    }
+
+    private String chunkWorkKey(UUID operationId, PurgeChunkTarget target) {
+        return operationId + ":" + target.key();
     }
 
     private void addLoadedChunkTargets(PurgeOperation operation) {
