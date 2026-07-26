@@ -273,7 +273,7 @@ class DiaryPurgeServiceTest {
             service.tick();
         }
 
-        verify(store).markDeliveryDelivered(playerId, token);
+        verify(store).confirmDeliveryPresent(playerId, token);
         verify(inventory, never()).addItem(any());
     }
 

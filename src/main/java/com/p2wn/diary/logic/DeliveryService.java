@@ -33,6 +33,7 @@ public final class DeliveryService {
     private DiaryAnalyticsStore analyticsStore;
     private PerformanceMonitor performanceMonitor;
     private final Set<UUID> inFlightDeliveries = new HashSet<>();
+    private long generation;
 
     public DeliveryService(Plugin plugin, DiaryStore diaryStore) {
         this.plugin = plugin;
@@ -83,6 +84,7 @@ public final class DeliveryService {
     }
 
     public void reloadSettings() {
+        generation++;
         releaseInFlightClaims();
         stop();
         if (!diaryStore.getPlayersWithPendingDeliveries().isEmpty()) {
@@ -92,6 +94,7 @@ public final class DeliveryService {
     }
 
     public void shutdown() {
+        generation++;
         releaseInFlightClaims();
         stop();
     }
@@ -139,7 +142,7 @@ public final class DeliveryService {
 
             for (PendingDelivery delivery : deliveries) {
                 if (hasDeliveredToken(player, delivery.token())) {
-                    markDelivered(playerId, delivery.token());
+                    confirmPresent(playerId, delivery.token());
                     continue;
                 }
                 if (!diaryStore.claimDelivery(playerId, delivery.token())) {
@@ -163,26 +166,33 @@ public final class DeliveryService {
                 .filter(entry -> entry.playerId().equals(player.getUniqueId()))
                 .filter(entry -> entry.delivery().lifecycle() == DeliveryLifecycle.CLAIMED)
                 .filter(entry -> hasDeliveredToken(player, entry.delivery().token()))
-                .forEach(entry -> markDelivered(entry.playerId(), entry.delivery().token()));
+                .forEach(entry -> confirmPresent(entry.playerId(), entry.delivery().token()));
     }
 
     private void persistClaimThenDeliver(UUID playerId, PendingDelivery delivery) {
+        long callbackGeneration = generation;
         inFlightDeliveries.add(delivery.token());
         diaryStore.flushDurably().whenComplete((ignored, failure) -> Bukkit.getScheduler().runTask(plugin, () -> {
             inFlightDeliveries.remove(delivery.token());
+            if (callbackGeneration != generation) {
+                return;
+            }
             if (failure != null) {
                 diaryStore.releaseDeliveryClaim(playerId, delivery.token());
                 diaryStore.flushDurably();
                 return;
             }
             Player player = Bukkit.getPlayer(playerId);
-            if (player == null || !player.isOnline()) {
+            var current = diaryStore.getDeliveryEntry(delivery.token());
+            if (current == null || !current.playerId().equals(playerId)
+                    || current.delivery().lifecycle() != DeliveryLifecycle.CLAIMED
+                    || player == null || !player.isOnline()) {
                 diaryStore.releaseDeliveryClaim(playerId, delivery.token());
                 diaryStore.flushDurably();
                 return;
             }
             if (hasDeliveredToken(player, delivery.token())) {
-                markDelivered(playerId, delivery.token());
+                confirmPresent(playerId, delivery.token());
                 return;
             }
             ItemStack item = delivery.item().clone();
@@ -220,6 +230,12 @@ public final class DeliveryService {
 
     private void markDelivered(UUID playerId, UUID deliveryId) {
         if (diaryStore.markDeliveryDelivered(playerId, deliveryId)) {
+            diaryStore.flushDurably();
+        }
+    }
+
+    private void confirmPresent(UUID playerId, UUID deliveryId) {
+        if (diaryStore.confirmDeliveryPresent(playerId, deliveryId)) {
             diaryStore.flushDurably();
         }
     }

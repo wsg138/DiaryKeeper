@@ -243,6 +243,15 @@ public final class DiaryStore {
         return updateDeliveryLifecycle(playerId, token, DeliveryLifecycle.CLAIMED, DeliveryLifecycle.DELIVERED);
     }
 
+    public boolean confirmDeliveryPresent(UUID playerId, UUID deliveryId) {
+        DeliveryEntry entry = getDeliveryEntry(deliveryId);
+        if (entry == null || !entry.playerId().equals(playerId)
+                || entry.delivery().lifecycle() == DeliveryLifecycle.DELIVERED) {
+            return false;
+        }
+        return updateDeliveryLifecycle(playerId, deliveryId, entry.delivery().lifecycle(), DeliveryLifecycle.DELIVERED);
+    }
+
     private boolean updateDeliveryLifecycle(UUID playerId, UUID token, DeliveryLifecycle expected, DeliveryLifecycle replacement) {
         if (token == null) {
             return false;
@@ -966,7 +975,7 @@ public final class DiaryStore {
             UUID uuid = parseUuid(key);
             if (uuid == null) continue;
             PlayerIdentity identity = new PlayerIdentity(uuid, section.getString(key + ".name"), section.getLong(key + ".lastSeen"));
-            for (String alias : section.getStringList(key + ".aliases")) identity.observe(alias, identity.lastSeen());
+            for (String alias : section.getStringList(key + ".aliases")) identity.addAlias(alias);
             identities.put(uuid, identity);
         }
     }
@@ -1115,14 +1124,14 @@ public final class DiaryStore {
         markDirty();
     }
 
-    public UUID resolveStoredPlayerUuid(String input) {
-        try { return UUID.fromString(input); } catch (IllegalArgumentException ignored) { }
-        String normalized = input.toLowerCase(Locale.ROOT);
+    public IdentityResolution resolveStoredPlayer(String input) {
+        try { return IdentityResolution.found(UUID.fromString(input)); } catch (IllegalArgumentException ignored) { }
         List<UUID> matches = identities.values().stream()
                 .filter(identity -> identity.currentName() != null && identity.currentName().equalsIgnoreCase(input)
                         || identity.aliases().stream().anyMatch(alias -> alias.equalsIgnoreCase(input)))
                 .map(PlayerIdentity::uuid).distinct().toList();
-        return matches.size() == 1 ? matches.getFirst() : null;
+        return matches.size() == 1 ? IdentityResolution.found(matches.getFirst())
+                : matches.isEmpty() ? IdentityResolution.notFound() : IdentityResolution.ambiguous();
     }
 
     private void migrateIdentitiesFromTrackedDiaries() {

@@ -20,5 +20,6 @@ public final class PlayerIdentity {
     public String currentName() { return currentName; }
     public Set<String> aliases() { return Set.copyOf(aliases); }
     public long lastSeen() { return lastSeen; }
+    public void addAlias(String alias) { if (alias != null && !alias.isBlank()) aliases.add(alias); }
     public void observe(String name, long when) { if (name != null && !name.isBlank()) { currentName = name; aliases.add(name); } lastSeen = when; }
 }

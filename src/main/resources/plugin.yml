@@ -1,6 +1,6 @@
 name: DiaryKeeper
 main: com.p2wn.diary.DiaryPlugin
-version: 1.4.0
+version: 1.4.1
 api-version: '1.21'
 authors: [ P2wn ]
 description: One-of-a-kind, owner-editable collectible diaries with safe queueing and duplicate warnings

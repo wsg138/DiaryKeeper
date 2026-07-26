@@ -6,6 +6,7 @@ import com.p2wn.diary.data.PurgeDestination;
 import com.p2wn.diary.data.PurgeOperation;
 import com.p2wn.diary.data.DeliveryEntry;
 import com.p2wn.diary.data.DeliveryLifecycle;
+import com.p2wn.diary.data.IdentityResolution;
 import com.p2wn.diary.logic.DiaryService;
 import org.bukkit.Bukkit;
 import org.bukkit.OfflinePlayer;
@@ -128,6 +129,10 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
         }
 
         OfflinePlayer target = resolveOfflinePlayer(args[1]);
+        if (target == null) {
+            sender.sendMessage("Unknown or ambiguous offline player; use UUID or diary ID.");
+            return true;
+        }
         DiaryService.IssueResult result = plugin.diaryService().issueDiary(target, args[1]);
         sender.sendMessage(plugin.diaryService().formatAdminSummary(result));
         return true;
@@ -139,6 +144,10 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
             return true;
         }
         OfflinePlayer target = resolveOfflinePlayer(args[1]);
+        if (target == null) {
+            sender.sendMessage("Unknown or ambiguous offline player; use UUID or diary ID.");
+            return true;
+        }
         DiaryService.DiaryStatus status = plugin.diaryService().getStatus(target);
         for (String line : plugin.diaryService().formatStatus(target, status).split("\n")) {
             sender.sendMessage(line);
@@ -334,14 +343,17 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
     }
 
     private OfflinePlayer resolveOfflinePlayer(String input) {
-        UUID stored = plugin.diaryStore().resolveStoredPlayerUuid(input);
-        if (stored != null) {
-            return Bukkit.getOfflinePlayer(stored);
+        IdentityResolution stored = plugin.diaryStore().resolveStoredPlayer(input);
+        if (stored.status() == IdentityResolution.Status.FOUND) {
+            return Bukkit.getOfflinePlayer(stored.uuid());
+        }
+        if (stored.status() == IdentityResolution.Status.AMBIGUOUS) {
+            return null;
         }
         try {
             return Bukkit.getOfflinePlayer(UUID.fromString(input));
         } catch (IllegalArgumentException ex) {
-            return Bukkit.getOfflinePlayer(input);
+            return Bukkit.getPlayerExact(input);
         }
     }
 
@@ -355,7 +367,7 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
         }
 
         OfflinePlayer target = resolveOfflinePlayer(input);
-        return target.getUniqueId() == null ? null : plugin.diaryStore().findDiaryIdByOwner(target.getUniqueId());
+        return target == null ? null : plugin.diaryStore().findDiaryIdByOwner(target.getUniqueId());
     }
 
     private void sendUsage(CommandSender sender) {
