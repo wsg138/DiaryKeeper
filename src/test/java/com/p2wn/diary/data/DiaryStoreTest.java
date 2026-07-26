@@ -354,6 +354,35 @@ class DiaryStoreTest {
         assertTrue(restarted.getPendingDeliveries(player, 10).isEmpty());
     }
 
+    @Test
+    void startupRecoveryDurablyReturnsPersistedReleasePendingToQueuedExactlyOnce() {
+        UUID player = UUID.randomUUID();
+        UUID delivery = UUID.randomUUID();
+        ItemStack item = mock(ItemStack.class, withSettings().serializable());
+        when(item.getType()).thenReturn(org.bukkit.Material.BUNDLE);
+        when(item.clone()).thenReturn(item);
+
+        DiaryStore first = store();
+        first.queueDelivery(player, DeliveryReason.VOID_RETURN, item, delivery);
+        assertTrue(first.claimDelivery(player, delivery));
+        first.flushDurably().join();
+        assertThrows(CompletionException.class,
+                () -> first.releaseDeliveryClaimDurably(player, delivery).join());
+
+        DiaryStore recovered = store();
+        recovered.load();
+        assertEquals(DeliveryLifecycle.RELEASE_PENDING, recovered.getDeliveryEntry(delivery).delivery().lifecycle());
+        assertTrue(recovered.recoverInterruptedDeliveryReleases().join());
+        assertEquals(DeliveryLifecycle.QUEUED, recovered.getDeliveryEntry(delivery).delivery().lifecycle());
+
+        DiaryStore restarted = store();
+        restarted.load();
+        assertEquals(1, restarted.getDeliveryEntries().size());
+        assertEquals(delivery, restarted.getDeliveryEntries().getFirst().delivery().token());
+        assertEquals(DeliveryLifecycle.QUEUED, restarted.getDeliveryEntries().getFirst().delivery().lifecycle());
+        assertEquals(1, restarted.getPendingDeliveries(player, 10).size());
+    }
+
     private void writeLegacyDelivery(YamlConfiguration yaml, UUID player, int index, UUID token,
                                      String lifecycle, String encoded) {
         String base = "pendingDeliveries." + player + "." + index;

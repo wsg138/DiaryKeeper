@@ -102,6 +102,33 @@ class DiaryStoreDurableReleaseTest {
         }
     }
 
+    @Test
+    void durableQueueUsesItsStableTokenOnceAndDoesNotReportSuccessBeforeTheWriterRuns() {
+        try (Fixture f = new Fixture(temp)) {
+            UUID secondDelivery = UUID.randomUUID();
+            ItemStack item = mock(ItemStack.class, withSettings().serializable());
+            when(item.getType()).thenReturn(org.bukkit.Material.BUNDLE);
+            when(item.clone()).thenReturn(item);
+
+            CompletableFuture<DiaryStore.DurableQueueResult> queued = f.store.queueDeliveryDurably(
+                    f.player, DeliveryReason.VOID_RETURN, item, secondDelivery);
+            assertFalse(queued.isDone());
+            assertEquals(1, f.store.getDeliveryEntries().stream()
+                    .filter(entry -> secondDelivery.equals(entry.delivery().token())).count());
+
+            f.runAsync();
+            assertEquals(DiaryStore.DurableQueueResult.SAVED, queued.join());
+            assertEquals(1, f.store.getDeliveryEntries().stream()
+                    .filter(entry -> secondDelivery.equals(entry.delivery().token())).count());
+
+            CompletableFuture<DiaryStore.DurableQueueResult> duplicate = f.store.queueDeliveryDurably(
+                    f.player, DeliveryReason.VOID_RETURN, item, secondDelivery);
+            assertEquals(DiaryStore.DurableQueueResult.ALREADY_QUEUED, duplicate.join());
+            assertEquals(1, f.store.getDeliveryEntries().stream()
+                    .filter(entry -> secondDelivery.equals(entry.delivery().token())).count());
+        }
+    }
+
     private static final class Fixture implements AutoCloseable {
         final Plugin plugin = mock(Plugin.class);
         final BukkitScheduler scheduler = mock(BukkitScheduler.class);
