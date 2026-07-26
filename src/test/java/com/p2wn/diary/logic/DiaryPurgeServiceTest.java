@@ -36,8 +36,6 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.logging.Logger;
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
@@ -90,9 +88,7 @@ class DiaryPurgeServiceTest {
         assertFalse(target.completed());
         assertTrue(operation.verificationRequired());
         assertEquals(1, operation.chunkTargets().size());
-        Field queued = DiaryPurgeService.class.getDeclaredField("queuedChunkKeys");
-        queued.setAccessible(true);
-        assertEquals(1, ((Set<?>) queued.get(fixture.service)).size());
+        assertEquals(1, fixture.service.queuedChunkCount());
     }
 
     @Test
@@ -104,10 +100,7 @@ class DiaryPurgeServiceTest {
         World world = mock(World.class);
         CompletableFuture<Chunk> future = new CompletableFuture<>();
         when(world.getChunkAtAsync(1, 1, true)).thenReturn(future);
-        Method request = DiaryPurgeService.class.getDeclaredMethod("requestAsyncChunkLoad", PurgeOperation.class,
-                PurgeChunkTarget.class, World.class);
-        request.setAccessible(true);
-        request.invoke(fixture.service, operation, target, world);
+        fixture.service.requestAsyncChunkLoad(operation, target, world);
         verify(world, never()).addPluginChunkTicket(anyInt(), anyInt(), any());
         verify(world, never()).getChunkAt(anyInt(), anyInt());
     }
@@ -156,12 +149,8 @@ class DiaryPurgeServiceTest {
         when(chunk.getTileEntities()).thenReturn(new org.bukkit.block.BlockState[]{chest});
         when(chunk.getEntities()).thenReturn(new org.bukkit.entity.Entity[0]);
 
-        Method scan = DuplicateWatcher.class.getDeclaredMethod("scanChunkItems", Chunk.class, int.class, int.class);
-        scan.setAccessible(true);
-        Object result = scan.invoke(watcher, chunk, 0, 100);
-        Method occurrences = result.getClass().getDeclaredMethod("occurrences");
-        occurrences.setAccessible(true);
-        org.junit.jupiter.api.Assertions.assertEquals(1, ((List<?>) occurrences.invoke(result)).size());
+        DuplicateWatcher.ChunkScanResult result = watcher.scanChunkItems(chunk, 0, 100);
+        assertEquals(1, result.occurrences().size());
     }
 
     @Test
@@ -174,18 +163,14 @@ class DiaryPurgeServiceTest {
         DuplicateWatcher watcher = new DuplicateWatcher(plugin, config, diaryItem);
         Chunk first = chunkWithDiary(UUID.randomUUID(), 1, 2, diaryItem);
         Chunk second = chunkWithDiary(UUID.randomUUID(), 3, 4, diaryItem);
-        Method scan = DuplicateWatcher.class.getDeclaredMethod("scanChunkItems", Chunk.class, int.class, int.class);
-        scan.setAccessible(true);
-        scan.invoke(watcher, first, 0, 100);
-        scan.invoke(watcher, second, 0, 100);
+        watcher.scanChunkItems(first, 0, 100);
+        watcher.scanChunkItems(second, 0, 100);
         when(first.getTileEntities()).thenReturn(new org.bukkit.block.BlockState[0]);
-        scan.invoke(watcher, first, 0, 100);
+        watcher.scanChunkItems(first, 0, 100);
 
-        Field snapshots = DuplicateWatcher.class.getDeclaredField("blockContainerSnapshots");
-        snapshots.setAccessible(true);
-        Map<?, ?> values = (Map<?, ?>) snapshots.get(watcher);
-        assertEquals(1, values.size());
-        assertTrue(values.keySet().iterator().next().toString().contains(":3:4:"));
+        Set<String> keys = watcher.blockContainerSnapshotKeys();
+        assertEquals(1, keys.size());
+        assertTrue(keys.iterator().next().contains(":3:4:"));
     }
 
     @Test
@@ -198,14 +183,12 @@ class DiaryPurgeServiceTest {
         DuplicateWatcher watcher = new DuplicateWatcher(plugin, config, diaryItem);
         Chunk chunk = chunkWithDiary(UUID.randomUUID(), 5, 6, diaryItem);
         when(chunk.getTileEntities()).thenReturn(new org.bukkit.block.BlockState[0]);
-        Method scan = DuplicateWatcher.class.getDeclaredMethod("scanChunkItems", Chunk.class, int.class, int.class);
-        scan.setAccessible(true);
-        scan.invoke(watcher, chunk, 0, 100);
-        assertTrue(containerSnapshots(watcher).isEmpty());
+        watcher.scanChunkItems(chunk, 0, 100);
+        assertTrue(watcher.blockContainerSnapshotKeys().isEmpty());
 
         Chunk populated = chunkWithDiary(chunk.getWorld().getUID(), 5, 6, diaryItem);
-        scan.invoke(watcher, populated, 0, 100);
-        assertEquals(1, containerSnapshots(watcher).size());
+        watcher.scanChunkItems(populated, 0, 100);
+        assertEquals(1, watcher.blockContainerSnapshotKeys().size());
     }
 
     @Test
@@ -389,12 +372,6 @@ class DiaryPurgeServiceTest {
         when(meta.getPersistentDataContainer()).thenReturn(data);
         when(data.get(deliveryKey, org.bukkit.persistence.PersistentDataType.STRING)).thenReturn(token.toString());
         return item;
-    }
-
-    private Map<?, ?> containerSnapshots(DuplicateWatcher watcher) throws Exception {
-        Field snapshots = DuplicateWatcher.class.getDeclaredField("blockContainerSnapshots");
-        snapshots.setAccessible(true);
-        return (Map<?, ?>) snapshots.get(watcher);
     }
 
     private TrackedDiaryRecord record() {

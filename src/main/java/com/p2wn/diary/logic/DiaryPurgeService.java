@@ -345,7 +345,7 @@ public final class DiaryPurgeService {
         scanLoadedChunk(operation, target, world.getChunkAt(target.chunkX(), target.chunkZ()));
     }
 
-    private void requestAsyncChunkLoad(PurgeOperation operation, PurgeChunkTarget target, World world) {
+    void requestAsyncChunkLoad(PurgeOperation operation, PurgeChunkTarget target, World world) {
         if (target.loading()) {
             return;
         }
@@ -699,6 +699,10 @@ public final class DiaryPurgeService {
         if (queuedChunkKeys.add(key)) {
             chunkQueue.addLast(new ChunkTarget(operation.operationId(), target));
         }
+    }
+
+    int queuedChunkCount() {
+        return queuedChunkKeys.size();
     }
 
     private PurgeChunkTarget findChunkTarget(PurgeOperation operation, Chunk chunk) {

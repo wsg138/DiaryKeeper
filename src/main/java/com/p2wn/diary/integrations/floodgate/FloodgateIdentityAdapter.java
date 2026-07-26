@@ -17,8 +17,8 @@ public final class FloodgateIdentityAdapter {
     private final Method isFloodgatePlayer;
     private final Method getPlayer;
 
-    private FloodgateIdentityAdapter(Plugin plugin, DiaryStore store, Object api,
-                                     Method isFloodgatePlayer, Method getPlayer) {
+    FloodgateIdentityAdapter(Plugin plugin, DiaryStore store, Object api,
+                             Method isFloodgatePlayer, Method getPlayer) {
         this.plugin = plugin;
         this.store = store;
         this.api = api;

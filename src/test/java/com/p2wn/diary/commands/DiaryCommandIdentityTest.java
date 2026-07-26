@@ -14,6 +14,7 @@ import org.mockito.MockedStatic;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -55,7 +56,7 @@ class DiaryCommandIdentityTest {
                     new String[]{"issue", "NeverJoined"});
             verify(service, never()).issueDiary(any(), eq("NeverJoined"));
             assertEquals(1, messages.size());
-            assertFalse(messages.getFirst().toLowerCase().contains("diary id"));
+            assertFalse(messages.getFirst().toLowerCase(Locale.ROOT).contains("diary id"));
             assertTrue(messages.getFirst().contains("exact UUID"));
             bukkit.verify(() -> Bukkit.getOfflinePlayer("NeverJoined"), never());
         }

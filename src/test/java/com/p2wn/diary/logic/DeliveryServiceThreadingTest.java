@@ -9,7 +9,6 @@ import org.bukkit.scheduler.BukkitScheduler;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
 
-import java.lang.reflect.Method;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -58,11 +57,10 @@ class DeliveryServiceThreadingTest {
     void asynchronousCompletionOnlyQueuesMainThreadContinuation() throws Exception {
         try (Fixture fixture = new Fixture()) {
             CountDownLatch completed = new CountDownLatch(1);
-            Thread completionThread = new Thread(() -> {
+            CompletableFuture.runAsync(() -> {
                 fixture.release.complete(true);
                 completed.countDown();
-            }, "yaml-save-test");
-            completionThread.start();
+            });
             assertTrue(completed.await(1, TimeUnit.SECONDS));
             assertNotNull(fixture.mainTask.get());
             verify(fixture.scheduler, never()).runTaskTimer(
@@ -117,10 +115,7 @@ class DeliveryServiceThreadingTest {
                 @Override public void execute(Runnable task) { mainTask.set(task); }
                 @Override public void executeLater(Runnable task, long delayTicks) { mainTask.set(task); }
             });
-            Method method = DeliveryService.class.getDeclaredMethod(
-                    "releaseClaimDurably", UUID.class, UUID.class, long.class);
-            method.setAccessible(true);
-            method.invoke(service, player, delivery, 0L);
+            service.releaseClaimDurably(player, delivery, 0L);
         }
 
         void complete(boolean value) {

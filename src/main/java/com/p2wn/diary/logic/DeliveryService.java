@@ -259,7 +259,7 @@ public final class DeliveryService {
         });
     }
 
-    private void releaseClaimDurably(UUID playerId, UUID deliveryId, long callbackGeneration) {
+    void releaseClaimDurably(UUID playerId, UUID deliveryId, long callbackGeneration) {
         diaryStore.releaseDeliveryClaimDurably(playerId, deliveryId).whenComplete((released, failure) -> {
             if (!plugin.isEnabled()) {
                 return;

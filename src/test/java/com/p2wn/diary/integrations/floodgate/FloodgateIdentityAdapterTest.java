@@ -5,7 +5,6 @@ import org.bukkit.entity.Player;
 import org.bukkit.plugin.Plugin;
 import org.junit.jupiter.api.Test;
 
-import java.lang.reflect.Constructor;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -21,11 +20,7 @@ class FloodgateIdentityAdapterTest {
         when(player.getUniqueId()).thenReturn(uuid);
         when(player.getName()).thenReturn(".Fallback");
         FakeApi api = new FakeApi(uuid);
-        Constructor<FloodgateIdentityAdapter> constructor = FloodgateIdentityAdapter.class
-                .getDeclaredConstructor(Plugin.class, DiaryStore.class, Object.class,
-                        java.lang.reflect.Method.class, java.lang.reflect.Method.class);
-        constructor.setAccessible(true);
-        FloodgateIdentityAdapter adapter = constructor.newInstance(plugin, store, api,
+        FloodgateIdentityAdapter adapter = new FloodgateIdentityAdapter(plugin, store, api,
                 FakeApi.class.getMethod("isFloodgatePlayer", UUID.class),
                 FakeApi.class.getMethod("getPlayer", UUID.class));
 

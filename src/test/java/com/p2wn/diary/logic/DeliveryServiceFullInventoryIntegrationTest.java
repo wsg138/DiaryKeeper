@@ -29,6 +29,7 @@ import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -99,24 +100,22 @@ class DeliveryServiceFullInventoryIntegrationTest {
             Runnable actualSave = f.async.removeFirst();
             CountDownLatch saveEntered = new CountDownLatch(1);
             CountDownLatch releaseSave = new CountDownLatch(1);
-            Thread writer = new Thread(() -> {
+            CompletableFuture<Void> writer = CompletableFuture.runAsync(() -> {
                 saveEntered.countDown();
                 await(releaseSave);
                 actualSave.run();
-            }, "latched-diaries-yaml-writer");
-            writer.start();
+            });
             assertTrue(saveEntered.await(1, TimeUnit.SECONDS));
 
             CountDownLatch shutdownStarted = new CountDownLatch(1);
-            Thread shutdown = new Thread(() -> {
+            CompletableFuture<Void> shutdown = CompletableFuture.runAsync(() -> {
                 shutdownStarted.countDown();
                 f.service.shutdown();
-            }, "delivery-shutdown");
-            shutdown.start();
+            });
             assertTrue(shutdownStarted.await(1, TimeUnit.SECONDS));
             releaseSave.countDown();
-            writer.join();
-            shutdown.join();
+            writer.get(1, TimeUnit.SECONDS);
+            shutdown.get(1, TimeUnit.SECONDS);
             f.runAllMain();
 
             verify(f.inventory, never()).addItem(any(ItemStack.class));
@@ -224,13 +223,11 @@ class DeliveryServiceFullInventoryIntegrationTest {
             assertFalse(async.isEmpty());
             Runnable task = async.removeFirst();
             CountDownLatch done = new CountDownLatch(1);
-            Thread thread = new Thread(() -> {
+            CompletableFuture.runAsync(() -> {
                 task.run();
                 done.countDown();
-            }, "diaries-yaml-writer");
-            thread.start();
+            });
             assertTrue(done.await(1, TimeUnit.SECONDS));
-            thread.join();
         }
 
         void runMain() {

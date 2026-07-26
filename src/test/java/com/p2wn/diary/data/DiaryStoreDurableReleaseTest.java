@@ -15,6 +15,7 @@ import java.util.Deque;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -142,9 +143,7 @@ class DiaryStoreDurableReleaseTest {
 
             f.writer.failuresRemaining = 1;
             CompletableFuture<Boolean> recovery = f.store.recoverInterruptedDeliveryReleases();
-            Thread writerThread = new Thread(f::runAsync, "yaml-writer");
-            writerThread.start();
-            writerThread.join();
+            CompletableFuture.runAsync(f::runAsync).get(1, TimeUnit.SECONDS);
 
             assertEquals(DeliveryLifecycle.QUEUED, f.lifecycle());
             assertFalse(recovery.isDone());

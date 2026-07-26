@@ -1105,7 +1105,7 @@ public final class DiaryStore {
                     dirty = false;
                 }
                 saveQueued = false;
-                if (runningSave == future) {
+                if (Objects.equals(runningSave, future)) {
                     runningSave = null;
                 }
             }

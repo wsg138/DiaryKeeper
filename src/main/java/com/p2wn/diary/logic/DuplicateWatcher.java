@@ -275,7 +275,7 @@ public final class DuplicateWatcher {
         }
     }
 
-    private ChunkScanResult scanChunkItems(Chunk chunk, int startIndex, int maxEntities) {
+    ChunkScanResult scanChunkItems(Chunk chunk, int startIndex, int maxEntities) {
         List<Occurrence> occurrences = new ArrayList<>();
         if (startIndex == 0) {
             scanBlockContainers(chunk, occurrences);
@@ -325,7 +325,11 @@ public final class DuplicateWatcher {
                 && !observedContainerKeys.contains(key));
     }
 
-    private record ChunkScanResult(List<Occurrence> occurrences, int nextEntityIndex, boolean incomplete) {}
+    record ChunkScanResult(List<Occurrence> occurrences, int nextEntityIndex, boolean incomplete) {}
+
+    Set<String> blockContainerSnapshotKeys() {
+        return Set.copyOf(blockContainerSnapshots.keySet());
+    }
 
     private void queueChunkScan(Chunk chunk) {
         if (chunk == null || !configManager.cfg().getBoolean(DUPLICATE_SCAN_ENABLED, true)) {
