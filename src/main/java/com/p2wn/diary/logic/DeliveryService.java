@@ -177,7 +177,9 @@ public final class DeliveryService {
                 continue;
             }
 
-            for (PendingDelivery delivery : deliveries) {
+            boolean deliveryStarted = false;
+            for (int index = 0; index < deliveries.size() && !deliveryStarted; index++) {
+                PendingDelivery delivery = deliveries.get(index);
                 if (hasDeliveredToken(player, delivery.token())) {
                     confirmPresent(playerId, delivery.token());
                     continue;
@@ -186,7 +188,7 @@ public final class DeliveryService {
                     continue;
                 }
                 persistClaimThenDeliver(playerId, delivery);
-                break;
+                deliveryStarted = true;
             }
 
             processedPlayers++;

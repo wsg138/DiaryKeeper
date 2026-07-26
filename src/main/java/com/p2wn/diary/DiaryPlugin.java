@@ -115,8 +115,8 @@ public final class DiaryPlugin extends JavaPlugin {
         activeDiaryStore.recoverInterruptedDeliveryReleases().whenComplete((recovered, failure) ->
                 getServer().getScheduler().runTask(this, () -> {
                     if (!isEnabled()) return;
-                    if (failure != null || !Boolean.TRUE.equals(recovered)) {
-                        if (failure != null) getLogger().warning("Interrupted delivery release recovery failed: " + failure.getMessage());
+                    if (failure != null) {
+                        getLogger().warning("Interrupted delivery release recovery failed: " + failure.getMessage());
                     }
                     activeDeliveryService.reloadSettings();
                     activeDiaryPurgeService.start();
