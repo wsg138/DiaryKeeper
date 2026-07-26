@@ -193,6 +193,9 @@ public final class DiaryStore {
         List<PendingDelivery> results = new ArrayList<>(Math.min(limit, record.pendingDeliveries.size()));
         int count = 0;
         for (PendingDelivery delivery : record.pendingDeliveries) {
+            if (delivery.lifecycle() != DeliveryLifecycle.QUEUED) {
+                continue;
+            }
             results.add(delivery.copy());
             if (++count >= limit) {
                 break;
@@ -227,6 +230,40 @@ public final class DiaryStore {
         return removed;
     }
 
+    public boolean claimDelivery(UUID playerId, UUID token) {
+        return updateDeliveryLifecycle(playerId, token, DeliveryLifecycle.QUEUED, DeliveryLifecycle.CLAIMED);
+    }
+
+    public boolean releaseDeliveryClaim(UUID playerId, UUID token) {
+        return updateDeliveryLifecycle(playerId, token, DeliveryLifecycle.CLAIMED, DeliveryLifecycle.QUEUED);
+    }
+
+    public boolean markDeliveryDelivered(UUID playerId, UUID token) {
+        return updateDeliveryLifecycle(playerId, token, DeliveryLifecycle.CLAIMED, DeliveryLifecycle.DELIVERED);
+    }
+
+    private boolean updateDeliveryLifecycle(UUID playerId, UUID token, DeliveryLifecycle expected, DeliveryLifecycle replacement) {
+        if (token == null) {
+            return false;
+        }
+        PlayerRecord record = records.get(playerId);
+        if (record == null) {
+            return false;
+        }
+        List<PendingDelivery> deliveries = new ArrayList<>(record.pendingDeliveries);
+        for (int i = 0; i < deliveries.size(); i++) {
+            PendingDelivery delivery = deliveries.get(i);
+            if (token.equals(delivery.token()) && delivery.lifecycle() == expected) {
+                deliveries.set(i, new PendingDelivery(delivery.reason(), delivery.item(), token, replacement));
+                record.pendingDeliveries.clear();
+                record.pendingDeliveries.addAll(deliveries);
+                markDirty();
+                return true;
+            }
+        }
+        return false;
+    }
+
     public int removeAllPendingDeliveriesByDiaryId(String diaryId) {
         int removed = 0;
         for (PlayerRecord record : records.values()) {
@@ -248,13 +285,15 @@ public final class DiaryStore {
 
     public int getPendingDeliveryCount(UUID playerId) {
         PlayerRecord record = records.get(playerId);
-        return record == null ? 0 : record.pendingDeliveries.size();
+        return record == null ? 0 : (int) record.pendingDeliveries.stream()
+                .filter(delivery -> delivery.lifecycle() == DeliveryLifecycle.QUEUED).count();
     }
 
     public Set<UUID> getPlayersWithPendingDeliveries() {
         Set<UUID> results = new HashSet<>();
         for (Map.Entry<UUID, PlayerRecord> entry : records.entrySet()) {
-            if (!entry.getValue().pendingDeliveries.isEmpty()) {
+            if (entry.getValue().pendingDeliveries.stream()
+                    .anyMatch(delivery -> delivery.lifecycle() == DeliveryLifecycle.QUEUED)) {
                 results.add(entry.getKey());
             }
         }
@@ -264,7 +303,7 @@ public final class DiaryStore {
     public int getTotalPendingDeliveryCount() {
         int total = 0;
         for (PlayerRecord record : records.values()) {
-            total += record.pendingDeliveries.size();
+            total += record.pendingDeliveries.stream().filter(delivery -> delivery.lifecycle() == DeliveryLifecycle.QUEUED).count();
         }
         return total;
     }
@@ -539,14 +578,14 @@ public final class DiaryStore {
         Set<UUID> holders = new HashSet<>();
         DiaryRecordState state = diaryRecords.get(diaryId);
         if (state != null) {
-            state.locations.stream().map(DiaryLocationRecord::holderUuid).filter(Objects::nonNull).forEach(holders::add);
+            state.locations.stream()
+                    .filter(DiaryLocationRecord::active)
+                    .filter(location -> location.type() == DiaryLocationType.PLAYER_INVENTORY
+                            || location.type() == DiaryLocationType.PLAYER_ENDER_CHEST)
+                    .map(DiaryLocationRecord::holderUuid)
+                    .filter(Objects::nonNull)
+                    .forEach(holders::add);
         }
-        records.forEach((playerId, record) -> {
-            if (record.pendingRemovals.stream().anyMatch(removal -> diaryId.equals(removal.diaryId()))
-                    || record.pendingDeliveries.stream().anyMatch(delivery -> diaryId.equals(extractDiaryId(delivery.item())))) {
-                holders.add(playerId);
-            }
-        });
         return holders;
     }
 
@@ -745,6 +784,7 @@ public final class DiaryStore {
                 data.set(basePath + ".reason", delivery.reason().name());
                 data.set(basePath + ".itemBase64", ItemIO.toBase64(delivery.item()));
                 data.set(basePath + ".token", delivery.token() == null ? null : delivery.token().toString());
+                data.set(basePath + ".lifecycle", delivery.lifecycle().name());
             }
 
             int removalIndex = 0;
@@ -908,8 +948,9 @@ public final class DiaryStore {
                     String rawReason = pending.getString(basePath + ".reason", DeliveryReason.VOID_RETURN.name());
                     ItemStack item = readItem(pending, basePath + ".itemBase64", basePath + ".item");
                     if (item != null) {
-                        record.pendingDeliveries.addLast(new PendingDelivery(
-                                parseReason(rawReason), item, parseUuid(pending.getString(basePath + ".token"))));
+                        record.pendingDeliveries.addLast(new PendingDelivery(parseReason(rawReason), item,
+                                parseUuid(pending.getString(basePath + ".token")), parseEnum(DeliveryLifecycle.class,
+                                pending.getString(basePath + ".lifecycle"), DeliveryLifecycle.QUEUED)));
                     }
                 }
             }
@@ -1016,6 +1057,7 @@ public final class DiaryStore {
         data.set(base + ".deliveryToken", operation.deliveryToken() == null ? null : operation.deliveryToken().toString());
         data.set(base + ".verificationRequired", operation.verificationRequired());
         data.set(base + ".verificationRemovedBaseline", operation.verificationRemovedBaseline());
+        data.set(base + ".verificationGeneration", operation.verificationGeneration());
         data.set(base + ".pendingPlayers", operation.pendingPlayers().stream().map(UUID::toString).toList());
         data.set(base + ".errors", operation.errors());
         for (Map.Entry<String, Integer> count : operation.removedByLocation().entrySet()) {
@@ -1034,6 +1076,7 @@ public final class DiaryStore {
             data.set(targetBase + ".completed", target.completed());
             data.set(targetBase + ".attempts", target.attempts());
             data.set(targetBase + ".error", target.error());
+            data.set(targetBase + ".loading", false);
         }
     }
 
@@ -1109,6 +1152,7 @@ public final class DiaryStore {
             operation.setDeliveryToken(parseUuid(section.getString("deliveryToken")));
             operation.setVerificationRequired(section.getBoolean("verificationRequired", true));
             operation.setVerificationRemovedBaseline(section.getInt("verificationRemovedBaseline"));
+            operation.setVerificationGeneration(section.getInt("verificationGeneration"));
             operation.attachDirtyCallback(this::markDirty);
             purgeOperations.put(operationId, operation);
         }

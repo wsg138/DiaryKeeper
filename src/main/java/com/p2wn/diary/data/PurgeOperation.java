@@ -37,6 +37,7 @@ public final class PurgeOperation {
     private UUID deliveryToken;
     private boolean verificationRequired = true;
     private int verificationRemovedBaseline;
+    private int verificationGeneration;
     private transient Runnable dirtyCallback = () -> { };
 
     public PurgeOperation(UUID operationId, String diaryId, UUID ownerUuid, UUID adminUuid,
@@ -80,6 +81,7 @@ public final class PurgeOperation {
     public UUID deliveryToken() { return deliveryToken; }
     public boolean verificationRequired() { return verificationRequired; }
     public int verificationRemovedBaseline() { return verificationRemovedBaseline; }
+    public int verificationGeneration() { return verificationGeneration; }
 
     public void attachDirtyCallback(Runnable callback) {
         dirtyCallback = callback == null ? () -> { } : callback;
@@ -98,6 +100,8 @@ public final class PurgeOperation {
     public void setDeliveryToken(UUID value) { deliveryToken = value; changed(); }
     public void setVerificationRequired(boolean value) { verificationRequired = value; changed(); }
     public void setVerificationRemovedBaseline(int value) { verificationRemovedBaseline = value; changed(); }
+    public void nextVerificationGeneration() { verificationGeneration++; changed(); }
+    public void setVerificationGeneration(int value) { verificationGeneration = value; changed(); }
 
     public boolean addPendingPlayer(UUID playerId) { boolean result = pendingPlayers.add(playerId); if (result) changed(); return result; }
     public boolean completePlayer(UUID playerId) { boolean result = pendingPlayers.remove(playerId); if (result) changed(); return result; }

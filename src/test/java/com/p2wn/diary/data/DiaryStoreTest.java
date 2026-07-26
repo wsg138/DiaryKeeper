@@ -66,6 +66,20 @@ class DiaryStoreTest {
     }
 
     @Test
+    void credibleOfflineHoldersOnlyIncludeActivePlayerInventoryScopes() {
+        DiaryStore store = store();
+        ItemStack snapshot = mock(ItemStack.class);
+        when(snapshot.clone()).thenReturn(snapshot);
+        UUID active = UUID.randomUUID();
+        UUID inactive = UUID.randomUUID();
+        UUID queued = UUID.randomUUID();
+        store.updateTrackedDiary("diary", UUID.randomUUID(), "owner", snapshot, location(active, DiaryLocationType.PLAYER_INVENTORY, true));
+        store.updateTrackedDiary("diary", UUID.randomUUID(), "owner", snapshot, location(inactive, DiaryLocationType.PLAYER_ENDER_CHEST, false));
+        store.queuePendingRemoval(queued, new PendingRemoval("diary", DiaryLocationType.PLAYER_INVENTORY, queued));
+        assertEquals(java.util.Set.of(active), store.getCredibleOfflineHolders("diary"));
+    }
+
+    @Test
     void ambiguousPrefixIsRejected() {
         DiaryStore store = store();
         ItemStack snapshot = mock(ItemStack.class);
@@ -194,5 +208,10 @@ class DiaryStoreTest {
     private PurgeOperation operation(long startedAt) {
         return new PurgeOperation(UUID.randomUUID(), "diary", UUID.randomUUID(), null,
                 PurgeDestination.NONE, startedAt, null);
+    }
+
+    private DiaryLocationRecord location(UUID holder, DiaryLocationType type, boolean active) {
+        return new DiaryLocationRecord(type, "player", holder, "holder", null, null, null,
+                null, null, null, null, List.<String>of(), "inventory", 0, 1L, 1L, active);
     }
 }

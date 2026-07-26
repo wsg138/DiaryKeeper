@@ -13,7 +13,6 @@ import org.bukkit.Material;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockState;
 import org.bukkit.block.ShulkerBox;
-import org.bukkit.block.Container;
 import org.bukkit.entity.HumanEntity;
 import org.bukkit.entity.Item;
 import org.bukkit.entity.Player;
@@ -307,11 +306,11 @@ public final class DuplicateWatcher {
         String chunkPrefix = chunk.getWorld().getUID() + ":" + chunk.getX() + ":" + chunk.getZ() + ":";
         Set<String> observedContainerKeys = new HashSet<>();
         for (BlockState state : chunk.getTileEntities()) {
-            if (!(state instanceof Container container)) {
+            if (!(state instanceof InventoryHolder holder)) {
                 continue;
             }
             List<Occurrence> found = new ArrayList<>();
-            scanInventoryContents(container.getInventory().getContents(), "container", "block_container",
+            scanInventoryContents(holder.getInventory().getContents(), "container", "block_container",
                     coordsOf(state.getLocation()), found);
             String key = chunkPrefix + state.getX() + ":" + state.getY() + ":" + state.getZ();
             observedContainerKeys.add(key);

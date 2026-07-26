@@ -102,6 +102,8 @@ purge:
   max-entities-per-tick: 100
   chunk-load-timeout-seconds: 15
   max-chunk-retries: 3
+  max-chunk-targets: 512
+  max-operation-age-minutes: 1440
   max-recursion-depth: 4
   allow-restore-on-partial-purge: false
   post-purge-watch-minutes: 60

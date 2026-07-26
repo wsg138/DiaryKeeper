@@ -255,7 +255,7 @@ class DiaryPurgeServiceTest {
             service.tick();
         }
 
-        verify(store).removeFirstPendingDeliveries(playerId, 1);
+        verify(store).markDeliveryDelivered(playerId, token);
         verify(inventory, never()).addItem(any());
     }
 

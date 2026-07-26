@@ -15,6 +15,7 @@ public final class PurgeChunkTarget {
     private boolean completed;
     private int attempts;
     private String error;
+    private boolean loading;
     private transient Runnable dirtyCallback = () -> { };
 
     public PurgeChunkTarget(UUID worldUuid, String worldName, int chunkX, int chunkZ,
@@ -38,6 +39,7 @@ public final class PurgeChunkTarget {
     public boolean completed() { return completed; }
     public int attempts() { return attempts; }
     public String error() { return error; }
+    public boolean loading() { return loading; }
     public void attachDirtyCallback(Runnable callback) { dirtyCallback = callback == null ? () -> { } : callback; }
 
     public void complete() {
@@ -68,6 +70,11 @@ public final class PurgeChunkTarget {
         completed = false;
         attempts = 0;
         error = null;
+        dirtyCallback.run();
+    }
+
+    public void setLoading(boolean value) {
+        loading = value;
         dirtyCallback.run();
     }
 

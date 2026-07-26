@@ -15,7 +15,6 @@ import org.bukkit.Chunk;
 import org.bukkit.OfflinePlayer;
 import org.bukkit.World;
 import org.bukkit.block.BlockState;
-import org.bukkit.block.Container;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Item;
 import org.bukkit.entity.ItemFrame;
@@ -37,6 +36,7 @@ import java.util.Comparator;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 
 public final class DiaryPurgeService {
 
@@ -53,6 +53,7 @@ public final class DiaryPurgeService {
     private final Set<String> queuedPlayerKeys = new HashSet<>();
     private final Set<String> queuedChunkKeys = new HashSet<>();
     private final Map<String, ChunkWork> chunkWork = new HashMap<>();
+    private final Map<String, World> ticketedChunks = new HashMap<>();
     private final Set<UUID> persistenceInFlight = new HashSet<>();
     private BukkitTask task;
 
@@ -104,6 +105,8 @@ public final class DiaryPurgeService {
             operation.addPendingPlayer(player.getUniqueId());
             enqueuePlayer(operation, player.getUniqueId());
         }
+        int removedDeliveries = store.removeAllPendingDeliveriesByDiaryId(record.diaryId());
+        store.reconcileLegacyPendingRemovals(record.diaryId());
         for (UUID playerId : store.getCredibleOfflineHolders(record.diaryId())) {
             if (!onlineIds.contains(playerId)) {
                 operation.addPendingPlayer(playerId);
@@ -113,10 +116,8 @@ public final class DiaryPurgeService {
         }
 
         addKnownChunkTargets(operation, record.locations());
-        int removedDeliveries = store.removeAllPendingDeliveriesByDiaryId(record.diaryId());
         operation.setPendingDeliveriesRemoved(removedDeliveries);
         operation.addRemoved("delivery_queue", removedDeliveries);
-        store.reconcileLegacyPendingRemovals(record.diaryId());
         store.addPurgeOperation(operation);
         store.flushIfDirty();
         analytics(DiaryAnalyticsEventType.PURGE_STARTED, operation, adminUuid, destination.name());
@@ -195,16 +196,16 @@ public final class DiaryPurgeService {
         for (PurgeOperation operation : store.getActivePurgeOperations()) {
             PurgeChunkTarget target = findChunkTarget(operation, chunk);
             if (target == null) {
-                target = new PurgeChunkTarget(chunk.getWorld().getUID(), chunk.getWorld().getName(),
-                        chunk.getX(), chunk.getZ(), null, null, null);
-                operation.addChunkTarget(target);
-                analytics(DiaryAnalyticsEventType.PURGE_PENDING_CHUNK, operation, null, target.key());
-            } else {
-                target.resetForRetry();
+                continue;
             }
-            chunkWork.remove(chunkWorkKey(operation.operationId(), target));
+            if (target.completed()) {
+                target.resetForRetry();
+                chunkWork.remove(chunkWorkKey(operation.operationId(), target));
+            }
             operation.setVerificationRequired(true);
-            enqueueChunk(operation, target);
+            if (!target.loading()) {
+                enqueueChunk(operation, target);
+            }
         }
         ensureTask();
     }
@@ -337,44 +338,75 @@ public final class DiaryPurgeService {
             return;
         }
 
-        boolean ticketAdded = false;
+        if (!world.isChunkLoaded(target.chunkX(), target.chunkZ())) {
+            requestAsyncChunkLoad(operation, target, world);
+            return;
+        }
+        scanLoadedChunk(operation, target, world.getChunkAt(target.chunkX(), target.chunkZ()));
+    }
+
+    private void requestAsyncChunkLoad(PurgeOperation operation, PurgeChunkTarget target, World world) {
+        if (target.loading()) {
+            return;
+        }
+        operation.setState(PurgeState.PROCESSING_KNOWN_UNLOADED_CHUNKS);
+        target.setLoading(true);
+        String workKey = chunkWorkKey(operation.operationId(), target);
+        if (!ticketedChunks.containsKey(workKey) && world.addPluginChunkTicket(target.chunkX(), target.chunkZ(), plugin)) {
+            ticketedChunks.put(workKey, world);
+        }
+        int generation = operation.verificationGeneration();
+        CompletableFuture<Chunk> future = world.getChunkAtAsync(target.chunkX(), target.chunkZ(), true);
+        future.whenComplete((chunk, failure) -> Bukkit.getScheduler().runTask(plugin, () -> {
+            target.setLoading(false);
+            PurgeOperation current = store.getPurgeOperation(operation.operationId());
+            if (current != operation || operation.terminal()
+                    || (operation.state() == PurgeState.VERIFYING && operation.verificationGeneration() != generation)) {
+                releaseChunkTicket(operation, target);
+                return;
+            }
+            if (failure != null || chunk == null) {
+                failChunk(operation, target, failure == null ? "asynchronous chunk load failed" : failure.getMessage());
+                return;
+            }
+            scanLoadedChunk(operation, target, chunk);
+        }));
+    }
+
+    private void scanLoadedChunk(PurgeOperation operation, PurgeChunkTarget target, Chunk chunk) {
         try {
-            long loadStarted = System.nanoTime();
-            if (!world.isChunkLoaded(target.chunkX(), target.chunkZ())) {
-                operation.setState(PurgeState.PROCESSING_KNOWN_UNLOADED_CHUNKS);
-                ticketAdded = world.addPluginChunkTicket(target.chunkX(), target.chunkZ(), plugin);
-            } else {
-                operation.setState(PurgeState.SCANNING_LOADED_CHUNKS);
-            }
-            Chunk chunk = world.getChunkAt(target.chunkX(), target.chunkZ());
-            long loadMillis = (System.nanoTime() - loadStarted) / 1_000_000L;
-            long timeoutMillis = Math.max(1L,
-                    plugin.getConfig().getLong("purge.chunk-load-timeout-seconds", 15L)) * 1000L;
-            if (loadMillis > timeoutMillis) {
-                throw new IllegalStateException("chunk load exceeded " + timeoutMillis + "ms");
-            }
+            operation.setState(PurgeState.SCANNING_LOADED_CHUNKS);
             ChunkPurgeResult result = purgeChunk(chunk, operation.diaryId(), operation.operationId(), target);
-            int removed = result.removed();
-            operation.addRemoved("chunk", removed);
+            operation.addRemoved("chunk", result.removed());
             if (result.complete()) {
                 operation.setLoadedChunksScanned(operation.loadedChunksScanned() + 1);
                 target.complete();
+                releaseChunkTicket(operation, target);
             } else {
                 enqueueChunk(operation, target);
             }
-            logRemoval(operation, "chunk:" + target.key(), removed);
+            logRemoval(operation, "chunk:" + target.key(), result.removed());
         } catch (RuntimeException ex) {
-            target.fail(ex.getClass().getSimpleName() + ": " + ex.getMessage());
-            if (retryOrFinish(operation, target)) {
-                operation.addError("Chunk " + target.key() + ": " + ex.getMessage());
-            }
-            analytics(DiaryAnalyticsEventType.PURGE_FAILED, operation, null, "chunk " + target.key());
-        } finally {
-            if (ticketAdded) {
-                world.removePluginChunkTicket(target.chunkX(), target.chunkZ(), plugin);
-            }
+            failChunk(operation, target, ex.getClass().getSimpleName() + ": " + ex.getMessage());
         }
         finalizeIfReady(operation);
+    }
+
+    private void failChunk(PurgeOperation operation, PurgeChunkTarget target, String message) {
+            target.fail(message);
+            if (retryOrFinish(operation, target)) {
+                operation.addError("Chunk " + target.key() + ": " + message);
+                releaseChunkTicket(operation, target);
+            }
+            analytics(DiaryAnalyticsEventType.PURGE_FAILED, operation, null, "chunk " + target.key());
+        finalizeIfReady(operation);
+    }
+
+    private void releaseChunkTicket(PurgeOperation operation, PurgeChunkTarget target) {
+        World world = ticketedChunks.remove(chunkWorkKey(operation.operationId(), target));
+        if (world != null) {
+            world.removePluginChunkTicket(target.chunkX(), target.chunkZ(), plugin);
+        }
     }
 
     private boolean retryOrFinish(PurgeOperation operation, PurgeChunkTarget target) {
@@ -397,8 +429,8 @@ public final class DiaryPurgeService {
         for (int i = 0; i < maxBlockEntities && !work.blocks().isEmpty(); i++) {
             BlockPosition position = work.blocks().removeFirst();
             BlockState state = chunk.getWorld().getBlockAt(position.x(), position.y(), position.z()).getState();
-            if (state instanceof Container container) {
-                int count = itemPurger.purgeInventory(container.getInventory(), diaryId);
+            if (state instanceof InventoryHolder holder) {
+                int count = itemPurger.purgeInventory(holder.getInventory(), diaryId);
                 if (count > 0) {
                     state.update(true, false);
                     removed += count;
@@ -485,6 +517,13 @@ public final class DiaryPurgeService {
         if (operation.terminal()) {
             return;
         }
+        long maxAgeSeconds = Math.max(1L, plugin.getConfig().getLong("purge.max-operation-age-minutes", 1440L)) * 60L;
+        if (Instant.now().getEpochSecond() - operation.startedAt() > maxAgeSeconds) {
+            operation.addError("Purge exceeded configured maximum operation age");
+            operation.setState(PurgeState.PARTIAL);
+            store.purgeOperationChanged();
+            return;
+        }
         boolean queuedOnline = onlineQueue.stream().anyMatch(target -> target.operationId().equals(operation.operationId()));
         if (queuedOnline) {
             operation.setState(PurgeState.SCANNING_ONLINE_PLAYERS);
@@ -524,6 +563,7 @@ public final class DiaryPurgeService {
 
     private void beginVerification(PurgeOperation operation) {
         operation.setState(PurgeState.VERIFYING);
+        operation.nextVerificationGeneration();
         operation.setVerificationRequired(false);
         operation.setVerificationRemovedBaseline(operation.totalRemoved());
         for (Player player : Bukkit.getOnlinePlayers()) {
@@ -685,6 +725,12 @@ public final class DiaryPurgeService {
 
     private void addChunkTarget(PurgeOperation operation, PurgeChunkTarget candidate) {
         if (operation.chunkTargets().stream().noneMatch(existing -> sameChunk(existing, candidate))) {
+            int maximum = Math.max(1, plugin.getConfig().getInt("purge.max-chunk-targets", 512));
+            if (operation.chunkTargets().size() >= maximum) {
+                operation.addError("Purge exceeded configured maximum chunk targets");
+                operation.setState(PurgeState.PARTIAL);
+                return;
+            }
             operation.addChunkTarget(candidate);
             enqueueChunk(operation, candidate);
             analytics(DiaryAnalyticsEventType.PURGE_PENDING_CHUNK, operation, null, candidate.key());

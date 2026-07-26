@@ -133,18 +133,32 @@ public final class DeliveryService {
             }
 
             int deliveredCount = 0;
+            int removableDeliveries = 0;
             for (PendingDelivery delivery : deliveries) {
                 ItemStack item = delivery.item().clone();
                 if (hasDeliveredToken(player, delivery.token())) {
                     deliveredCount++;
+                    if (delivery.token() == null) {
+                        removableDeliveries++;
+                    } else {
+                        diaryStore.markDeliveryDelivered(playerId, delivery.token());
+                    }
+                    continue;
+                }
+                if (delivery.token() != null && !diaryStore.claimDelivery(playerId, delivery.token())) {
                     continue;
                 }
                 stampDeliveryToken(item, delivery.token());
                 if (!player.getInventory().addItem(item).isEmpty()) {
+                    diaryStore.releaseDeliveryClaim(playerId, delivery.token());
                     break;
                 }
 
                 deliveredCount++;
+                diaryStore.markDeliveryDelivered(playerId, delivery.token());
+                if (delivery.token() == null) {
+                    removableDeliveries++;
+                }
 
                 if (delivery.reason() == DeliveryReason.VOID_RETURN) {
                     diaryService.onVoidReturnDelivered(player, delivery.item());
@@ -161,7 +175,7 @@ public final class DeliveryService {
             }
 
             if (deliveredCount > 0) {
-                diaryStore.removeFirstPendingDeliveries(playerId, deliveredCount);
+                diaryStore.removeFirstPendingDeliveries(playerId, removableDeliveries);
                 diaryStore.flushIfDirty();
                 if (trackerService != null) {
                     trackerService.trackPlayerInventory(player);
