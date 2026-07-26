@@ -52,6 +52,7 @@ public final class DiaryStore {
 
     private final Plugin plugin;
     private final File file;
+    private final PersistenceWriter persistenceWriter;
     private final Object stateLock = new Object();
     private final Object fileSaveLock = new Object();
     private final Map<UUID, PlayerRecord> records = new HashMap<>();
@@ -73,8 +74,13 @@ public final class DiaryStore {
     private long lastPruneAt;
 
     public DiaryStore(Plugin plugin) {
+        this(plugin, null);
+    }
+
+    DiaryStore(Plugin plugin, PersistenceWriter persistenceWriter) {
         this.plugin = plugin;
         this.file = new File(plugin.getDataFolder(), "diaries.yml");
+        this.persistenceWriter = persistenceWriter;
     }
 
     public void load() {
@@ -1024,7 +1030,11 @@ public final class DiaryStore {
     private void saveSnapshot(SaveSnapshot snapshot, CompletableFuture<Void> future, boolean blocking) {
         boolean success = false;
         try {
-            writeAtomically(snapshot.data());
+            if (persistenceWriter == null) {
+                writeAtomically(snapshot.data());
+            } else {
+                persistenceWriter.write(snapshot.data());
+            }
             success = true;
             if (performanceMonitor != null) {
                 performanceMonitor.yamlSaveFlushed();
@@ -1571,4 +1581,9 @@ public final class DiaryStore {
     }
 
     private record SaveSnapshot(FileConfiguration data, int version) {}
+
+    @FunctionalInterface
+    interface PersistenceWriter {
+        void write(FileConfiguration data) throws IOException;
+    }
 }

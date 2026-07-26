@@ -29,6 +29,7 @@ public final class DeliveryService {
 
     private final Plugin plugin;
     private final DiaryStore diaryStore;
+    private final MainThreadExecutor mainThread;
     private BukkitTask task;
     private DiaryService diaryService;
     private DiaryTrackerService trackerService;
@@ -39,8 +40,20 @@ public final class DeliveryService {
     private long generation;
 
     public DeliveryService(Plugin plugin, DiaryStore diaryStore) {
+        this(plugin, diaryStore, new MainThreadExecutor() {
+            @Override public void execute(Runnable task) {
+                Bukkit.getScheduler().runTask(plugin, task);
+            }
+            @Override public void executeLater(Runnable task, long delayTicks) {
+                Bukkit.getScheduler().runTaskLater(plugin, task, delayTicks);
+            }
+        });
+    }
+
+    DeliveryService(Plugin plugin, DiaryStore diaryStore, MainThreadExecutor mainThread) {
         this.plugin = plugin;
         this.diaryStore = diaryStore;
+        this.mainThread = mainThread;
     }
 
     public void setDiaryService(DiaryService diaryService) {
@@ -177,7 +190,7 @@ public final class DeliveryService {
         inFlightDeliveries.add(delivery.token());
         diaryStore.flushDurably().whenComplete((ignored, failure) -> {
             if (!plugin.isEnabled()) return;
-            Bukkit.getScheduler().runTask(plugin, () -> {
+            mainThread.execute(() -> {
             inFlightDeliveries.remove(delivery.token());
             if (!plugin.isEnabled() || callbackGeneration != generation) {
                 return;
@@ -228,7 +241,7 @@ public final class DeliveryService {
             if (!plugin.isEnabled()) {
                 return;
             }
-            Bukkit.getScheduler().runTask(plugin, () ->
+            mainThread.execute(() ->
                     finishReleaseOnMainThread(playerId, deliveryId, callbackGeneration, released, failure));
         });
     }
@@ -249,7 +262,7 @@ public final class DeliveryService {
             return;
         }
         long delay = 20L << (attempt - 1);
-        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+        mainThread.executeLater(() -> {
             if (plugin.isEnabled() && callbackGeneration == generation) {
                 retryPendingRelease(playerId, deliveryId, callbackGeneration);
             }
@@ -259,7 +272,7 @@ public final class DeliveryService {
     private void retryPendingRelease(UUID playerId, UUID deliveryId, long callbackGeneration) {
         diaryStore.retryDeliveryDurably(deliveryId).whenComplete((released, failure) -> {
             if (!plugin.isEnabled()) return;
-            Bukkit.getScheduler().runTask(plugin, () ->
+            mainThread.execute(() ->
                     finishReleaseOnMainThread(playerId, deliveryId, callbackGeneration, released, failure));
         });
     }
@@ -361,5 +374,10 @@ public final class DeliveryService {
         if (performanceMonitor != null) {
             performanceMonitor.deliveryQueueSize(diaryStore.getTotalPendingDeliveryCount());
         }
+    }
+
+    interface MainThreadExecutor {
+        void execute(Runnable task);
+        void executeLater(Runnable task, long delayTicks);
     }
 }

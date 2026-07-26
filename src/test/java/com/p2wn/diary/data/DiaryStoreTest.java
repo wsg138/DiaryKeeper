@@ -300,6 +300,69 @@ class DiaryStoreTest {
         assertEquals(DeliveryLifecycle.QUEUED, restarted.getDeliveryEntry(delivery).delivery().lifecycle());
     }
 
+    @Test
+    void deliveryRetentionPrunesOnlyDeliveredAndLegacyRecordsGainCompatibleTimestamps() throws Exception {
+        UUID player = UUID.randomUUID();
+        ItemStack item = mock(ItemStack.class, withSettings().serializable());
+        when(item.getType()).thenReturn(org.bukkit.Material.BUNDLE);
+        when(item.clone()).thenReturn(item);
+        String encoded = com.p2wn.diary.util.ItemIO.toBase64(item);
+        UUID delivered = UUID.randomUUID();
+        UUID queued = UUID.randomUUID();
+        UUID pending = UUID.randomUUID();
+        YamlConfiguration yaml = new YamlConfiguration();
+        writeLegacyDelivery(yaml, player, 0, delivered, "DELIVERED", encoded);
+        yaml.set("pendingDeliveries." + player + ".0.deliveredAt", 1L);
+        writeLegacyDelivery(yaml, player, 1, queued, "QUEUED", encoded);
+        writeLegacyDelivery(yaml, player, 2, pending, "RELEASE_PENDING", encoded);
+        yaml.save(temp.resolve("diaries.yml").toFile());
+
+        DiaryStore store = store();
+        store.load();
+        assertTrue(store.getDeliveryEntry(queued).delivery().createdAt() > 0L);
+        assertTrue(store.getDeliveryEntry(pending).delivery().createdAt() > 0L);
+        store.pruneRetainedState();
+        assertNull(store.getDeliveryEntry(delivered));
+        assertNotNull(store.getDeliveryEntry(queued));
+        assertNotNull(store.getDeliveryEntry(pending));
+    }
+
+    @Test
+    void restartPreservesClaimedAndReleasePendingAsSingleNonDeliverableRecords() {
+        UUID player = UUID.randomUUID();
+        UUID claimedId = UUID.randomUUID();
+        UUID pendingId = UUID.randomUUID();
+        ItemStack item = mock(ItemStack.class, withSettings().serializable());
+        when(item.getType()).thenReturn(org.bukkit.Material.BUNDLE);
+        when(item.clone()).thenReturn(item);
+        DiaryStore first = store();
+        first.queueDelivery(player, DeliveryReason.VOID_RETURN, item, claimedId);
+        first.queueDelivery(player, DeliveryReason.RESTORE_OWNER, item, pendingId);
+        assertTrue(first.claimDelivery(player, claimedId));
+        assertTrue(first.claimDelivery(player, pendingId));
+        first.flushDurably().join();
+        assertThrows(CompletionException.class,
+                () -> first.releaseDeliveryClaimDurably(player, pendingId).join());
+
+        DiaryStore restarted = store();
+        restarted.load();
+        assertEquals(2, restarted.getDeliveryEntries().size());
+        assertEquals(DeliveryLifecycle.CLAIMED,
+                restarted.getDeliveryEntry(claimedId).delivery().lifecycle());
+        assertEquals(DeliveryLifecycle.RELEASE_PENDING,
+                restarted.getDeliveryEntry(pendingId).delivery().lifecycle());
+        assertTrue(restarted.getPendingDeliveries(player, 10).isEmpty());
+    }
+
+    private void writeLegacyDelivery(YamlConfiguration yaml, UUID player, int index, UUID token,
+                                     String lifecycle, String encoded) {
+        String base = "pendingDeliveries." + player + "." + index;
+        yaml.set(base + ".reason", DeliveryReason.VOID_RETURN.name());
+        yaml.set(base + ".itemBase64", encoded);
+        yaml.set(base + ".token", token.toString());
+        yaml.set(base + ".lifecycle", lifecycle);
+    }
+
 
     private DiaryStore store() {
         return store(temp.toFile());

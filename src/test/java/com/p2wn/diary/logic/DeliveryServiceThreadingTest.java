@@ -14,8 +14,12 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
@@ -24,7 +28,7 @@ class DeliveryServiceThreadingTest {
     void durableCompletionUsesMainThreadAndCurrentGenerationRestartsExactlyOnce() throws Exception {
         try (Fixture fixture = new Fixture()) {
             fixture.complete(true);
-            verify(fixture.scheduler).runTask(eq(fixture.plugin), any(Runnable.class));
+            assertNotNull(fixture.mainTask.get());
             fixture.mainTask.get().run();
             verify(fixture.scheduler, times(1)).runTaskTimer(eq(fixture.plugin), any(Runnable.class), anyLong(), anyLong());
         }
@@ -47,6 +51,36 @@ class DeliveryServiceThreadingTest {
             fixture.complete(true);
             fixture.mainTask.get().run();
             verify(fixture.scheduler, never()).runTaskTimer(eq(fixture.plugin), any(Runnable.class), anyLong(), anyLong());
+        }
+    }
+
+    @Test
+    void asynchronousCompletionOnlyQueuesMainThreadContinuation() throws Exception {
+        try (Fixture fixture = new Fixture()) {
+            CountDownLatch completed = new CountDownLatch(1);
+            Thread completionThread = new Thread(() -> {
+                fixture.release.complete(true);
+                completed.countDown();
+            }, "yaml-save-test");
+            completionThread.start();
+            assertTrue(completed.await(1, TimeUnit.SECONDS));
+            assertNotNull(fixture.mainTask.get());
+            verify(fixture.scheduler, never()).runTaskTimer(
+                    eq(fixture.plugin), any(Runnable.class), anyLong(), anyLong());
+            fixture.mainTask.get().run();
+            verify(fixture.scheduler, times(1)).runTaskTimer(
+                    eq(fixture.plugin), any(Runnable.class), anyLong(), anyLong());
+        }
+    }
+
+    @Test
+    void disabledBeforeCompletionNeverTouchesSchedulerOrRestartsTask() throws Exception {
+        try (Fixture fixture = new Fixture()) {
+            when(fixture.plugin.isEnabled()).thenReturn(false);
+            fixture.release.complete(true);
+            assertNull(fixture.mainTask.get());
+            verify(fixture.scheduler, never()).runTaskTimer(
+                    eq(fixture.plugin), any(Runnable.class), anyLong(), anyLong());
         }
     }
 
@@ -79,7 +113,10 @@ class DeliveryServiceThreadingTest {
             });
             bukkit = mockStatic(Bukkit.class);
             bukkit.when(Bukkit::getScheduler).thenReturn(scheduler);
-            service = new DeliveryService(plugin, store);
+            service = new DeliveryService(plugin, store, new DeliveryService.MainThreadExecutor() {
+                @Override public void execute(Runnable task) { mainTask.set(task); }
+                @Override public void executeLater(Runnable task, long delayTicks) { mainTask.set(task); }
+            });
             Method method = DeliveryService.class.getDeclaredMethod(
                     "releaseClaimDurably", UUID.class, UUID.class, long.class);
             method.setAccessible(true);
