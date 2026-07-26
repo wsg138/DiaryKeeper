@@ -178,8 +178,7 @@ public final class DeliveryService {
                 return;
             }
             if (failure != null) {
-                diaryStore.releaseDeliveryClaim(playerId, delivery.token());
-                diaryStore.flushDurably();
+                releaseClaimDurably(playerId, delivery.token(), callbackGeneration);
                 return;
             }
             Player player = Bukkit.getPlayer(playerId);
@@ -187,8 +186,7 @@ public final class DeliveryService {
             if (current == null || !current.playerId().equals(playerId)
                     || current.delivery().lifecycle() != DeliveryLifecycle.CLAIMED
                     || player == null || !player.isOnline()) {
-                diaryStore.releaseDeliveryClaim(playerId, delivery.token());
-                diaryStore.flushDurably();
+                releaseClaimDurably(playerId, delivery.token(), callbackGeneration);
                 return;
             }
             if (hasDeliveredToken(player, delivery.token())) {
@@ -198,8 +196,7 @@ public final class DeliveryService {
             ItemStack item = delivery.item().clone();
             stampDeliveryToken(item, delivery.token());
             if (!player.getInventory().addItem(item).isEmpty()) {
-                diaryStore.releaseDeliveryClaim(playerId, delivery.token());
-                diaryStore.flushIfDirty();
+                releaseClaimDurably(playerId, delivery.token(), callbackGeneration);
                 return;
             }
             markDelivered(playerId, delivery.token());
@@ -218,6 +215,18 @@ public final class DeliveryService {
                 diaryService.refreshOwnedDiaries(player);
             }
         }));
+    }
+
+    private void releaseClaimDurably(UUID playerId, UUID deliveryId, long callbackGeneration) {
+        diaryStore.releaseDeliveryClaimDurably(playerId, deliveryId).whenComplete((released, failure) -> {
+            if (failure != null) {
+                plugin.getLogger().warning("Delivery claim release could not be persisted for " + deliveryId);
+            }
+            if (callbackGeneration != generation || failure != null || !Boolean.TRUE.equals(released)) {
+                return;
+            }
+            requestDelivery(playerId);
+        });
     }
 
     private void releaseInFlightClaims() {

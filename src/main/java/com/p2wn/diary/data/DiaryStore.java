@@ -230,6 +230,13 @@ public final class DiaryStore {
         return updateDeliveryLifecycle(playerId, token, DeliveryLifecycle.CLAIMED, DeliveryLifecycle.QUEUED);
     }
 
+    public CompletableFuture<Boolean> releaseDeliveryClaimDurably(UUID playerId, UUID deliveryId) {
+        if (!releaseDeliveryClaim(playerId, deliveryId)) {
+            return CompletableFuture.completedFuture(false);
+        }
+        return flushDurably().thenApply(ignored -> true);
+    }
+
     public boolean releaseDeliveryClaim(UUID token) {
         for (UUID playerId : records.keySet()) {
             if (releaseDeliveryClaim(playerId, token)) {

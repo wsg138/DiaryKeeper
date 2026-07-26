@@ -74,6 +74,7 @@ duplicate-scan:
 # Delivery queue tuning.
 # These values cap work per tick so the plugin stays predictable with many players online.
 delivery:
+  audit-retention-days: 30
   retry-interval-ticks: 20
   max-players-per-tick: 10
   max-items-per-player-per-tick: 2

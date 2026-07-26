@@ -91,8 +91,15 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
 
     private boolean handleDeliveries(CommandSender sender, String[] args) {
         if (args.length < 2 || "list".equalsIgnoreCase(args[1])) {
-            plugin.diaryStore().getDeliveryEntries().stream().limit(50).forEach(entry -> sender.sendMessage(
-                    "§e" + entry.delivery().token() + " §f" + entry.playerId() + " §7" + entry.delivery().lifecycle()));
+            String filter = args.length >= 3 ? args[2].toLowerCase(Locale.ROOT) : "open";
+            int page = args.length >= 4 ? Math.max(1, parsePage(args[3])) : 1;
+            plugin.diaryStore().getDeliveryEntries().stream()
+                    .filter(entry -> matchesDeliveryFilter(entry, filter))
+                    .sorted((left, right) -> deliverySortKey(left).compareTo(deliverySortKey(right)))
+                    .skip((long) (page - 1) * 10).limit(10)
+                    .forEach(entry -> sender.sendMessage("§e" + entry.delivery().token() + " §f" + entry.playerId()
+                            + " §7" + entry.delivery().reason() + " " + entry.delivery().lifecycle()
+                            + " claimed=" + entry.delivery().claimedAt()));
             return true;
         }
         if (args.length < 3) {
@@ -113,13 +120,33 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
         if (args.length < 4) { sender.sendMessage("Usage: /diary deliveries resolve <id> <retry|delivered|cancel>"); return true; }
         boolean changed = switch (args[3].toLowerCase(Locale.ROOT)) {
             case "retry" -> plugin.diaryStore().releaseDeliveryClaim(entry.playerId(), deliveryId);
-            case "delivered" -> plugin.diaryStore().markDeliveryDelivered(entry.playerId(), deliveryId);
+            case "delivered" -> plugin.diaryStore().confirmDeliveryPresent(entry.playerId(), deliveryId);
             case "cancel" -> plugin.diaryStore().cancelDelivery(deliveryId);
             default -> false;
         };
         if (changed) { plugin.diaryStore().flushNowBlocking("delivery administration"); }
         sender.sendMessage(changed ? "Delivery updated." : "Delivery could not be updated.");
         return true;
+    }
+
+    private int parsePage(String value) {
+        try { return Integer.parseInt(value); } catch (NumberFormatException ex) { return 1; }
+    }
+
+    private boolean matchesDeliveryFilter(DeliveryEntry entry, String filter) {
+        return switch (filter) {
+            case "queued" -> entry.delivery().lifecycle() == DeliveryLifecycle.QUEUED;
+            case "claimed" -> entry.delivery().lifecycle() == DeliveryLifecycle.CLAIMED;
+            case "delivered" -> entry.delivery().lifecycle() == DeliveryLifecycle.DELIVERED;
+            case "all" -> true;
+            default -> entry.delivery().lifecycle() != DeliveryLifecycle.DELIVERED;
+        };
+    }
+
+    private String deliverySortKey(DeliveryEntry entry) {
+        long when = entry.delivery().claimedAt();
+        return (entry.delivery().lifecycle() == DeliveryLifecycle.CLAIMED ? "0" : "1")
+                + String.format(Locale.ROOT, "%020d", when) + entry.delivery().token();
     }
 
     private boolean handleIssue(CommandSender sender, String[] args) {

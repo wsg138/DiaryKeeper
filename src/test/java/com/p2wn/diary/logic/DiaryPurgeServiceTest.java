@@ -224,6 +224,8 @@ class DiaryPurgeServiceTest {
         UUID deliveryId = UUID.randomUUID();
         when(store.claimDelivery(playerId, deliveryId)).thenReturn(true);
         when(store.flushDurably()).thenReturn(java.util.concurrent.CompletableFuture.completedFuture(null));
+        when(store.releaseDeliveryClaimDurably(playerId, deliveryId))
+                .thenReturn(java.util.concurrent.CompletableFuture.completedFuture(true));
         com.p2wn.diary.data.PendingDelivery pending = new com.p2wn.diary.data.PendingDelivery(
                 com.p2wn.diary.data.DeliveryReason.RESTORE_ADMIN, diary, deliveryId);
         com.p2wn.diary.data.PendingDelivery claimed = new com.p2wn.diary.data.PendingDelivery(
@@ -246,7 +248,7 @@ class DiaryPurgeServiceTest {
             service.tick();
         }
         verify(inventory).addItem(diary);
-        verify(store).releaseDeliveryClaim(playerId, deliveryId);
+        verify(store).releaseDeliveryClaimDurably(playerId, deliveryId);
     }
 
     @Test
