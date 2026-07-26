@@ -129,6 +129,31 @@ class DiaryStoreDurableReleaseTest {
         }
     }
 
+    @Test
+    void interruptedRecoveryFailureRollsBackOnlyOnTheMainThread() throws Exception {
+        try (Fixture f = new Fixture(temp)) {
+            f.persistClaim();
+            f.writer.failuresRemaining = 1;
+            CompletableFuture<Boolean> failedRelease = f.store.releaseDeliveryClaimDurably(f.player, f.delivery);
+            f.runAsync();
+            f.runMain();
+            assertThrows(CompletionException.class, failedRelease::join);
+            assertEquals(DeliveryLifecycle.RELEASE_PENDING, f.lifecycle());
+
+            f.writer.failuresRemaining = 1;
+            CompletableFuture<Boolean> recovery = f.store.recoverInterruptedDeliveryReleases();
+            Thread writerThread = new Thread(f::runAsync, "yaml-writer");
+            writerThread.start();
+            writerThread.join();
+
+            assertEquals(DeliveryLifecycle.QUEUED, f.lifecycle());
+            assertFalse(recovery.isDone());
+            f.runMain();
+            assertFalse(recovery.join());
+            assertEquals(DeliveryLifecycle.RELEASE_PENDING, f.lifecycle());
+        }
+    }
+
     private static final class Fixture implements AutoCloseable {
         final Plugin plugin = mock(Plugin.class);
         final BukkitScheduler scheduler = mock(BukkitScheduler.class);

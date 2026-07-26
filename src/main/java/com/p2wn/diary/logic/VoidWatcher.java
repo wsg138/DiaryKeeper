@@ -22,6 +22,7 @@ import com.p2wn.diary.data.DiaryStore;
 public final class VoidWatcher {
 
     private record TrackedDrop(UUID worldId, UUID deliveryId) {}
+    private record PersistenceAttempt(long generation) {}
 
     private final Plugin plugin;
     private final ConfigManager configManager;
@@ -31,6 +32,7 @@ public final class VoidWatcher {
 
     private final Map<UUID, TrackedDrop> trackedDrops = new HashMap<>();
     private final Set<UUID> queueingDrops = new HashSet<>();
+    private final Map<UUID, PersistenceAttempt> persistenceAttempts = new HashMap<>();
     private BukkitTask task;
     private PerformanceMonitor performanceMonitor;
     private long generation;
@@ -71,6 +73,7 @@ public final class VoidWatcher {
         }
         trackedDrops.remove(item.getUniqueId());
         queueingDrops.remove(item.getUniqueId());
+        persistenceAttempts.remove(item.getUniqueId());
         duplicateWatcher.removeGroundItemSnapshot(item.getUniqueId());
         updateCounter();
         stopIfIdle();
@@ -89,6 +92,7 @@ public final class VoidWatcher {
         stop();
         trackedDrops.clear();
         queueingDrops.clear();
+        persistenceAttempts.clear();
         updateCounter();
     }
 
@@ -148,6 +152,7 @@ public final class VoidWatcher {
     }
 
     private void handleVoid(Item item, TrackedDrop tracked) {
+        if (persistenceAttempts.containsKey(item.getUniqueId())) return;
         if (!queueingDrops.add(item.getUniqueId())) return;
 
         if (!configManager.cfg().getBoolean("void.return-to-dropper", true)) {
@@ -168,10 +173,16 @@ public final class VoidWatcher {
         UUID entityId = item.getUniqueId();
         UUID deliveryId = tracked.deliveryId();
         ItemStack snapshot = item.getItemStack().clone();
+        PersistenceAttempt attempt = new PersistenceAttempt(callbackGeneration);
+        persistenceAttempts.put(entityId, attempt);
         deliveryService.queueDurably(dropperId, DeliveryReason.VOID_RETURN, snapshot, deliveryId)
-                .whenComplete((result, failure) -> Bukkit.getScheduler().runTask(plugin, () -> {
-                    if (!plugin.isEnabled() || callbackGeneration != generation) return;
+                .whenComplete((result, failure) -> {
+                    if (!plugin.isEnabled()) return;
+                    Bukkit.getScheduler().runTask(plugin, () -> {
+                    if (!plugin.isEnabled() || persistenceAttempts.get(entityId) != attempt) return;
+                    persistenceAttempts.remove(entityId);
                     queueingDrops.remove(entityId);
+                    if (callbackGeneration != generation) return;
                     if (failure == null && (result == DiaryStore.DurableQueueResult.SAVED
                             || result == DiaryStore.DurableQueueResult.ALREADY_QUEUED)) {
                         Item current = findTrackedItem(entityId, tracked.worldId());
@@ -186,7 +197,8 @@ public final class VoidWatcher {
                     plugin.getLogger().warning("Void delivery persistence failed delivery=" + deliveryId
                             + " diary=" + diaryItem.getDiaryId(snapshot) + " player=" + dropperId
                             + " failure=" + (failure == null ? result : failure.getMessage()));
-                }));
+                    });
+                });
     }
 
     private void updateCounter() {

@@ -369,7 +369,7 @@ class DiaryStoreTest {
         assertThrows(CompletionException.class,
                 () -> first.releaseDeliveryClaimDurably(player, delivery).join());
 
-        DiaryStore recovered = store();
+        DiaryStore recovered = store(true);
         recovered.load();
         assertEquals(DeliveryLifecycle.RELEASE_PENDING, recovered.getDeliveryEntry(delivery).delivery().lifecycle());
         assertTrue(recovered.recoverInterruptedDeliveryReleases().join());
@@ -394,10 +394,18 @@ class DiaryStoreTest {
 
 
     private DiaryStore store() {
-        return store(temp.toFile());
+        return store(temp.toFile(), false);
     }
 
     private DiaryStore store(File dataFolder) {
+        return store(dataFolder, false);
+    }
+
+    private DiaryStore store(boolean enabled) {
+        return store(temp.toFile(), enabled);
+    }
+
+    private DiaryStore store(File dataFolder, boolean enabled) {
         Plugin plugin = mock(Plugin.class);
         Server server = mock(Server.class);
         BukkitScheduler scheduler = mock(BukkitScheduler.class);
@@ -406,10 +414,15 @@ class DiaryStoreTest {
         when(plugin.getServer()).thenReturn(server);
         when(plugin.getConfig()).thenReturn(config);
         when(plugin.getLogger()).thenReturn(java.util.logging.Logger.getAnonymousLogger());
+        when(plugin.isEnabled()).thenReturn(enabled);
         when(server.getScheduler()).thenReturn(scheduler);
         when(config.getLong(anyString(), anyLong())).thenAnswer(invocation -> invocation.getArgument(1));
         when(config.getInt(anyString(), anyInt())).thenAnswer(invocation -> invocation.getArgument(1));
         when(scheduler.runTaskAsynchronously(eq(plugin), any(Runnable.class))).thenAnswer(invocation -> {
+            invocation.<Runnable>getArgument(1).run();
+            return null;
+        });
+        when(scheduler.runTask(eq(plugin), any(Runnable.class))).thenAnswer(invocation -> {
             invocation.<Runnable>getArgument(1).run();
             return null;
         });

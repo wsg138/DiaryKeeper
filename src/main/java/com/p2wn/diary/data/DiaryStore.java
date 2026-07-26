@@ -221,14 +221,29 @@ public final class DiaryStore {
             updateDeliveryLifecycle(entry.playerId(), entry.delivery().token(), DeliveryLifecycle.RELEASE_PENDING,
                     DeliveryLifecycle.QUEUED, entry.delivery().lastPersistenceError());
         }
-        return flushDurably().handle((ignored, failure) -> {
-            if (failure == null) return true;
-            for (DeliveryEntry entry : interrupted) {
-                updateDeliveryLifecycle(entry.playerId(), entry.delivery().token(), DeliveryLifecycle.QUEUED,
-                        DeliveryLifecycle.RELEASE_PENDING, rootMessage(failure));
+        CompletableFuture<Boolean> result = new CompletableFuture<>();
+        flushDurably().whenComplete((ignored, failure) -> {
+            if (!plugin.isEnabled()) {
+                result.complete(false);
+                return;
             }
-            return false;
+            plugin.getServer().getScheduler().runTask(plugin, () -> {
+                if (!plugin.isEnabled()) {
+                    result.complete(false);
+                    return;
+                }
+                if (failure == null) {
+                    result.complete(true);
+                    return;
+                }
+                for (DeliveryEntry entry : interrupted) {
+                    updateDeliveryLifecycle(entry.playerId(), entry.delivery().token(), DeliveryLifecycle.QUEUED,
+                            DeliveryLifecycle.RELEASE_PENDING, rootMessage(failure));
+                }
+                result.complete(false);
+            });
         });
+        return result;
     }
 
     public boolean hasPendingDeliveryToken(UUID token) {
