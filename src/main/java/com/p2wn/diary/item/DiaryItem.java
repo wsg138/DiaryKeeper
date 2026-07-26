@@ -226,6 +226,7 @@ public final class DiaryItem {
         return nexoStack.clone();
     }
 
+    @SuppressWarnings("PMD.UseProperClassLoader") // The Nexo API is visible through Nexo's plugin class loader, not Bukkit's context loader.
     private ItemStack createNexoItem(String itemId) {
         Plugin nexo = Bukkit.getPluginManager().getPlugin("Nexo");
         if (nexo == null) {

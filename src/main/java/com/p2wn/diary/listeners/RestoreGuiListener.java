@@ -16,6 +16,7 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 
 import java.util.List;
+import java.util.Objects;
 
 public final class RestoreGuiListener implements Listener {
 
@@ -75,7 +76,7 @@ public final class RestoreGuiListener implements Listener {
             case 4 -> Action.DUPLICATE;
             default -> null;
         };
-        if (action == null) {
+        if (Objects.isNull(action)) {
             if (event.getRawSlot() == 8) {
                 player.closeInventory();
             }
