@@ -24,6 +24,7 @@ import java.util.HashSet;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 
 public final class DeliveryService {
 
@@ -79,6 +80,26 @@ public final class DeliveryService {
     public void queue(UUID playerId, DeliveryReason reason, ItemStack item, UUID token) {
         diaryStore.queueDelivery(playerId, reason, item, token);
         diaryStore.flushIfDirty();
+        updateDeliveryQueueSize();
+        if (analyticsStore != null) {
+            OfflinePlayer offlinePlayer = Bukkit.getOfflinePlayer(playerId);
+            String playerName = offlinePlayer.getName() != null ? offlinePlayer.getName() : playerId.toString();
+            analyticsStore.record(DiaryAnalyticsEventType.QUEUED_DELIVERY, playerId, playerName, extractDiaryId(item), reason.name());
+        }
+        if (trackerService != null) {
+            OfflinePlayer offlinePlayer = Bukkit.getOfflinePlayer(playerId);
+            String playerName = offlinePlayer.getName() != null ? offlinePlayer.getName() : playerId.toString();
+            trackerService.trackQueuedDelivery(playerId, playerName, item);
+        }
+        requestDelivery(playerId);
+    }
+
+    public CompletableFuture<DiaryStore.DurableQueueResult> queueDurably(UUID playerId, DeliveryReason reason,
+                                                                            ItemStack item, UUID token) {
+        return diaryStore.queueDeliveryDurably(playerId, reason, item, token);
+    }
+
+    public void completeDurableQueueOnMainThread(UUID playerId, DeliveryReason reason, ItemStack item) {
         updateDeliveryQueueSize();
         if (analyticsStore != null) {
             OfflinePlayer offlinePlayer = Bukkit.getOfflinePlayer(playerId);

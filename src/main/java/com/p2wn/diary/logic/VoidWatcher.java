@@ -7,6 +7,7 @@ import org.bukkit.Bukkit;
 import org.bukkit.World;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Item;
+import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.scheduler.BukkitTask;
 
@@ -14,10 +15,13 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.UUID;
+import java.util.HashSet;
+import java.util.Set;
+import com.p2wn.diary.data.DiaryStore;
 
 public final class VoidWatcher {
 
-    private record TrackedDrop(UUID worldId) {}
+    private record TrackedDrop(UUID worldId, UUID deliveryId) {}
 
     private final Plugin plugin;
     private final ConfigManager configManager;
@@ -26,8 +30,10 @@ public final class VoidWatcher {
     private final DuplicateWatcher duplicateWatcher;
 
     private final Map<UUID, TrackedDrop> trackedDrops = new HashMap<>();
+    private final Set<UUID> queueingDrops = new HashSet<>();
     private BukkitTask task;
     private PerformanceMonitor performanceMonitor;
+    private long generation;
 
     public VoidWatcher(
             Plugin plugin,
@@ -54,7 +60,7 @@ public final class VoidWatcher {
         if (item == null || item.isDead() || !diaryItem.isDiary(item.getItemStack())) {
             return;
         }
-        trackedDrops.put(item.getUniqueId(), new TrackedDrop(item.getWorld().getUID()));
+        trackedDrops.put(item.getUniqueId(), new TrackedDrop(item.getWorld().getUID(), UUID.randomUUID()));
         updateCounter();
         ensureRunning();
     }
@@ -64,12 +70,14 @@ public final class VoidWatcher {
             return;
         }
         trackedDrops.remove(item.getUniqueId());
+        queueingDrops.remove(item.getUniqueId());
         duplicateWatcher.removeGroundItemSnapshot(item.getUniqueId());
         updateCounter();
         stopIfIdle();
     }
 
     public void reloadSettings() {
+        generation++;
         stop();
         if (!trackedDrops.isEmpty() && configManager.cfg().getBoolean("void.return-to-dropper", true)) {
             ensureRunning();
@@ -77,8 +85,10 @@ public final class VoidWatcher {
     }
 
     public void shutdown() {
+        generation++;
         stop();
         trackedDrops.clear();
+        queueingDrops.clear();
         updateCounter();
     }
 
@@ -121,9 +131,7 @@ public final class VoidWatcher {
 
             int minY = item.getWorld().getMinHeight();
             if (item.getLocation().getY() < (minY - 2)) {
-                handleVoid(item);
-                iterator.remove();
-                updateCounter();
+                handleVoid(item, entry.getValue());
             }
         }
 
@@ -139,22 +147,46 @@ public final class VoidWatcher {
         return entity instanceof Item item ? item : null;
     }
 
-    private void handleVoid(Item item) {
-        duplicateWatcher.removeGroundItemSnapshot(item.getUniqueId());
+    private void handleVoid(Item item, TrackedDrop tracked) {
+        if (!queueingDrops.add(item.getUniqueId())) return;
 
         if (!configManager.cfg().getBoolean("void.return-to-dropper", true)) {
             item.remove();
+            trackedDrops.remove(item.getUniqueId());
+            queueingDrops.remove(item.getUniqueId());
             return;
         }
 
         UUID dropperId = diaryItem.getLastDropper(item.getItemStack());
         if (dropperId == null) {
             item.remove();
+            trackedDrops.remove(item.getUniqueId());
+            queueingDrops.remove(item.getUniqueId());
             return;
         }
-
-        deliveryService.queue(dropperId, DeliveryReason.VOID_RETURN, item.getItemStack().clone());
-        item.remove();
+        long callbackGeneration = generation;
+        UUID entityId = item.getUniqueId();
+        UUID deliveryId = tracked.deliveryId();
+        ItemStack snapshot = item.getItemStack().clone();
+        deliveryService.queueDurably(dropperId, DeliveryReason.VOID_RETURN, snapshot, deliveryId)
+                .whenComplete((result, failure) -> Bukkit.getScheduler().runTask(plugin, () -> {
+                    if (!plugin.isEnabled() || callbackGeneration != generation) return;
+                    queueingDrops.remove(entityId);
+                    if (failure == null && (result == DiaryStore.DurableQueueResult.SAVED
+                            || result == DiaryStore.DurableQueueResult.ALREADY_QUEUED)) {
+                        Item current = findTrackedItem(entityId, tracked.worldId());
+                        if (current != null && !current.isDead()) current.remove();
+                        duplicateWatcher.removeGroundItemSnapshot(entityId);
+                        trackedDrops.remove(entityId);
+                        updateCounter();
+                        deliveryService.completeDurableQueueOnMainThread(dropperId, DeliveryReason.VOID_RETURN, snapshot);
+                        stopIfIdle();
+                        return;
+                    }
+                    plugin.getLogger().warning("Void delivery persistence failed delivery=" + deliveryId
+                            + " diary=" + diaryItem.getDiaryId(snapshot) + " player=" + dropperId
+                            + " failure=" + (failure == null ? result : failure.getMessage()));
+                }));
     }
 
     private void updateCounter() {

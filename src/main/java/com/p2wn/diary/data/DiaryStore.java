@@ -34,6 +34,8 @@ import java.util.concurrent.ExecutionException;
 
 public final class DiaryStore {
 
+    public enum DurableQueueResult { SAVED, ALREADY_QUEUED, SAVE_FAILED, PLUGIN_DISABLED }
+
     private static final class PlayerRecord {
         private String diaryId;
         private Long issuedAt;
@@ -179,16 +181,54 @@ public final class DiaryStore {
     }
 
     public void queueDelivery(UUID playerId, DeliveryReason reason, ItemStack item, UUID token) {
+        queueDeliveryIfAbsent(playerId, reason, item, token);
+    }
+
+    public boolean queueDeliveryIfAbsent(UUID playerId, DeliveryReason reason, ItemStack item, UUID token) {
         if (item == null || item.getType() == Material.AIR) {
-            return;
+            return false;
         }
         UUID deliveryId = token == null ? UUID.randomUUID() : token;
         PlayerRecord record = getOrCreateRecord(playerId);
         if (record.pendingDeliveries.stream().anyMatch(delivery -> deliveryId.equals(delivery.token()))) {
-            return;
+            return false;
         }
         record.pendingDeliveries.addLast(new PendingDelivery(reason, item, deliveryId));
         markDirty();
+        return true;
+    }
+
+    public CompletableFuture<DurableQueueResult> queueDeliveryDurably(UUID playerId, DeliveryReason reason,
+                                                                        ItemStack item, UUID deliveryId) {
+        if (!plugin.isEnabled()) return CompletableFuture.completedFuture(DurableQueueResult.PLUGIN_DISABLED);
+        boolean added = queueDeliveryIfAbsent(playerId, reason, item, deliveryId);
+        if (!added && hasPendingDeliveryToken(deliveryId)) {
+            return flushDurably().handle((ignored, failure) -> failure == null
+                    ? DurableQueueResult.ALREADY_QUEUED : DurableQueueResult.SAVE_FAILED);
+        }
+        if (!added) return CompletableFuture.completedFuture(DurableQueueResult.SAVE_FAILED);
+        return flushDurably().handle((ignored, failure) -> {
+            if (!plugin.isEnabled()) return DurableQueueResult.PLUGIN_DISABLED;
+            return failure == null ? DurableQueueResult.SAVED : DurableQueueResult.SAVE_FAILED;
+        });
+    }
+
+    public CompletableFuture<Boolean> recoverInterruptedDeliveryReleases() {
+        List<DeliveryEntry> interrupted = getDeliveryEntries().stream()
+                .filter(entry -> entry.delivery().lifecycle() == DeliveryLifecycle.RELEASE_PENDING).toList();
+        if (interrupted.isEmpty()) return CompletableFuture.completedFuture(false);
+        for (DeliveryEntry entry : interrupted) {
+            updateDeliveryLifecycle(entry.playerId(), entry.delivery().token(), DeliveryLifecycle.RELEASE_PENDING,
+                    DeliveryLifecycle.QUEUED, entry.delivery().lastPersistenceError());
+        }
+        return flushDurably().handle((ignored, failure) -> {
+            if (failure == null) return true;
+            for (DeliveryEntry entry : interrupted) {
+                updateDeliveryLifecycle(entry.playerId(), entry.delivery().token(), DeliveryLifecycle.QUEUED,
+                        DeliveryLifecycle.RELEASE_PENDING, rootMessage(failure));
+            }
+            return false;
+        });
     }
 
     public boolean hasPendingDeliveryToken(UUID token) {
