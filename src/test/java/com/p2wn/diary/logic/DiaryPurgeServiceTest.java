@@ -34,6 +34,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.logging.Logger;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -92,6 +93,23 @@ class DiaryPurgeServiceTest {
         Field queued = DiaryPurgeService.class.getDeclaredField("queuedChunkKeys");
         queued.setAccessible(true);
         assertEquals(1, ((Set<?>) queued.get(fixture.service)).size());
+    }
+
+    @Test
+    void asyncChunkLoadDoesNotAddTicketBeforeFutureCompletes() throws Exception {
+        Fixture fixture = fixture();
+        PurgeOperation operation = operation(PurgeDestination.OWNER);
+        UUID worldId = UUID.randomUUID();
+        PurgeChunkTarget target = new PurgeChunkTarget(worldId, "world", 1, 1, null, null, null);
+        World world = mock(World.class);
+        CompletableFuture<Chunk> future = new CompletableFuture<>();
+        when(world.getChunkAtAsync(1, 1, true)).thenReturn(future);
+        Method request = DiaryPurgeService.class.getDeclaredMethod("requestAsyncChunkLoad", PurgeOperation.class,
+                PurgeChunkTarget.class, World.class);
+        request.setAccessible(true);
+        request.invoke(fixture.service, operation, target, world);
+        verify(world, never()).addPluginChunkTicket(anyInt(), anyInt(), any());
+        verify(world, never()).getChunkAt(anyInt(), anyInt());
     }
 
     @Test
@@ -214,7 +232,7 @@ class DiaryPurgeServiceTest {
             bukkit.when(() -> Bukkit.getPlayer(playerId)).thenReturn(player);
             service.tick();
         }
-        verify(store, never()).removeFirstPendingDeliveries(any(), anyInt());
+        verify(store, never()).markDeliveryDelivered(any(), any());
     }
 
     @Test

@@ -182,6 +182,22 @@ class DiaryStoreTest {
         assertEquals(1, restarted.getPendingDeliveryCount(player));
     }
 
+    @Test
+    void deliveredEntryDoesNotBlockTheNextQueuedDelivery() {
+        DiaryStore store = store();
+        UUID player = UUID.randomUUID();
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+        ItemStack item = mock(ItemStack.class);
+        when(item.getType()).thenReturn(org.bukkit.Material.BUNDLE);
+        when(item.clone()).thenReturn(item);
+        store.queueDelivery(player, DeliveryReason.RESTORE_OWNER, item, first);
+        store.queueDelivery(player, DeliveryReason.VOID_RETURN, item, second);
+        assertTrue(store.claimDelivery(player, first));
+        assertTrue(store.markDeliveryDelivered(player, first));
+        assertEquals(second, store.getPendingDeliveries(player, 1).getFirst().token());
+    }
+
     private DiaryStore store() {
         return store(temp.toFile());
     }

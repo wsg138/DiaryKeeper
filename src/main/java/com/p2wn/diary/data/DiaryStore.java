@@ -171,11 +171,12 @@ public final class DiaryStore {
         if (item == null || item.getType() == Material.AIR) {
             return;
         }
+        UUID deliveryId = token == null ? UUID.randomUUID() : token;
         PlayerRecord record = getOrCreateRecord(playerId);
-        if (token != null && record.pendingDeliveries.stream().anyMatch(delivery -> token.equals(delivery.token()))) {
+        if (record.pendingDeliveries.stream().anyMatch(delivery -> deliveryId.equals(delivery.token()))) {
             return;
         }
-        record.pendingDeliveries.addLast(new PendingDelivery(reason, item, token));
+        record.pendingDeliveries.addLast(new PendingDelivery(reason, item, deliveryId));
         markDirty();
     }
 
@@ -202,20 +203,6 @@ public final class DiaryStore {
             }
         }
         return results;
-    }
-
-    public void removeFirstPendingDeliveries(UUID playerId, int amount) {
-        if (amount <= 0) {
-            return;
-        }
-        PlayerRecord record = records.get(playerId);
-        if (record == null) {
-            return;
-        }
-        for (int i = 0; i < amount && !record.pendingDeliveries.isEmpty(); i++) {
-            record.pendingDeliveries.removeFirst();
-        }
-        markDirty();
     }
 
     public boolean removePendingDeliveriesByDiaryId(UUID playerId, String diaryId) {

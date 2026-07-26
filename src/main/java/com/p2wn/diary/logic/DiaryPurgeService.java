@@ -351,10 +351,6 @@ public final class DiaryPurgeService {
         }
         operation.setState(PurgeState.PROCESSING_KNOWN_UNLOADED_CHUNKS);
         target.setLoading(true);
-        String workKey = chunkWorkKey(operation.operationId(), target);
-        if (!ticketedChunks.containsKey(workKey) && world.addPluginChunkTicket(target.chunkX(), target.chunkZ(), plugin)) {
-            ticketedChunks.put(workKey, world);
-        }
         int generation = operation.verificationGeneration();
         CompletableFuture<Chunk> future = world.getChunkAtAsync(target.chunkX(), target.chunkZ(), true);
         future.whenComplete((chunk, failure) -> Bukkit.getScheduler().runTask(plugin, () -> {
@@ -368,6 +364,11 @@ public final class DiaryPurgeService {
             if (failure != null || chunk == null) {
                 failChunk(operation, target, failure == null ? "asynchronous chunk load failed" : failure.getMessage());
                 return;
+            }
+            String workKey = chunkWorkKey(operation.operationId(), target);
+            if (!ticketedChunks.containsKey(workKey)
+                    && world.addPluginChunkTicket(target.chunkX(), target.chunkZ(), plugin)) {
+                ticketedChunks.put(workKey, world);
             }
             scanLoadedChunk(operation, target, chunk);
         }));

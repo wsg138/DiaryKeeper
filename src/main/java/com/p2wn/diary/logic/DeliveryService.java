@@ -132,57 +132,16 @@ public final class DeliveryService {
                 continue;
             }
 
-            int deliveredCount = 0;
-            int removableDeliveries = 0;
             for (PendingDelivery delivery : deliveries) {
-                ItemStack item = delivery.item().clone();
                 if (hasDeliveredToken(player, delivery.token())) {
-                    deliveredCount++;
-                    if (delivery.token() == null) {
-                        removableDeliveries++;
-                    } else {
-                        diaryStore.markDeliveryDelivered(playerId, delivery.token());
-                    }
+                    markDelivered(playerId, delivery.token());
                     continue;
                 }
-                if (delivery.token() != null && !diaryStore.claimDelivery(playerId, delivery.token())) {
+                if (!diaryStore.claimDelivery(playerId, delivery.token())) {
                     continue;
                 }
-                stampDeliveryToken(item, delivery.token());
-                if (!player.getInventory().addItem(item).isEmpty()) {
-                    diaryStore.releaseDeliveryClaim(playerId, delivery.token());
-                    break;
-                }
-
-                deliveredCount++;
-                diaryStore.markDeliveryDelivered(playerId, delivery.token());
-                if (delivery.token() == null) {
-                    removableDeliveries++;
-                }
-
-                if (delivery.reason() == DeliveryReason.VOID_RETURN) {
-                    diaryService.onVoidReturnDelivered(player, delivery.item());
-                }
-                if (analyticsStore != null) {
-                    analyticsStore.record(
-                            DiaryAnalyticsEventType.DELIVERED_FROM_QUEUE,
-                            player.getUniqueId(),
-                            player.getName(),
-                            extractDiaryId(item),
-                            delivery.reason().name()
-                    );
-                }
-            }
-
-            if (deliveredCount > 0) {
-                diaryStore.removeFirstPendingDeliveries(playerId, removableDeliveries);
-                diaryStore.flushIfDirty();
-                if (trackerService != null) {
-                    trackerService.trackPlayerInventory(player);
-                    trackerService.refreshQueuedDeliveries(playerId, player.getName());
-                }
-                diaryService.refreshOwnedDiaries(player);
-                updateDeliveryQueueSize();
+                persistClaimThenDeliver(playerId, delivery);
+                break;
             }
 
             processedPlayers++;
@@ -192,6 +151,51 @@ public final class DeliveryService {
             stop();
         }
         updateDeliveryQueueSize();
+    }
+
+    private void persistClaimThenDeliver(UUID playerId, PendingDelivery delivery) {
+        diaryStore.flushDurably().whenComplete((ignored, failure) -> Bukkit.getScheduler().runTask(plugin, () -> {
+            if (failure != null) {
+                diaryStore.releaseDeliveryClaim(playerId, delivery.token());
+                return;
+            }
+            Player player = Bukkit.getPlayer(playerId);
+            if (player == null || !player.isOnline()) {
+                return;
+            }
+            if (hasDeliveredToken(player, delivery.token())) {
+                markDelivered(playerId, delivery.token());
+                return;
+            }
+            ItemStack item = delivery.item().clone();
+            stampDeliveryToken(item, delivery.token());
+            if (!player.getInventory().addItem(item).isEmpty()) {
+                diaryStore.releaseDeliveryClaim(playerId, delivery.token());
+                diaryStore.flushIfDirty();
+                return;
+            }
+            markDelivered(playerId, delivery.token());
+            if (delivery.reason() == DeliveryReason.VOID_RETURN && diaryService != null) {
+                diaryService.onVoidReturnDelivered(player, delivery.item());
+            }
+            if (analyticsStore != null) {
+                analyticsStore.record(DiaryAnalyticsEventType.DELIVERED_FROM_QUEUE, player.getUniqueId(),
+                        player.getName(), extractDiaryId(item), delivery.reason().name());
+            }
+            if (trackerService != null) {
+                trackerService.trackPlayerInventory(player);
+                trackerService.refreshQueuedDeliveries(playerId, player.getName());
+            }
+            if (diaryService != null) {
+                diaryService.refreshOwnedDiaries(player);
+            }
+        }));
+    }
+
+    private void markDelivered(UUID playerId, UUID deliveryId) {
+        if (diaryStore.markDeliveryDelivered(playerId, deliveryId)) {
+            diaryStore.flushDurably();
+        }
     }
 
     private String extractDiaryId(ItemStack item) {
