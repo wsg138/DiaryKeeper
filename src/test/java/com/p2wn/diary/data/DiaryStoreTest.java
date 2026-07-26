@@ -198,6 +198,7 @@ class DiaryStoreTest {
         assertEquals(second, store.getPendingDeliveries(player, 1).getFirst().token());
     }
 
+
     private DiaryStore store() {
         return store(temp.toFile());
     }

@@ -55,6 +55,8 @@ public final class DiaryStore {
     private final Object stateLock = new Object();
     private final Object fileSaveLock = new Object();
     private final Map<UUID, PlayerRecord> records = new HashMap<>();
+    private final Map<UUID, PlayerIdentity> identities = new HashMap<>();
+    private boolean pendingDeliveryIdsMigrated;
     private final Map<String, DiaryRecordState> diaryRecords = new HashMap<>();
     private final Map<UUID, PurgeOperation> purgeOperations = new HashMap<>();
     private final Map<UUID, Set<String>> locationDiaryIdsByHolder = new HashMap<>();
@@ -86,13 +88,16 @@ public final class DiaryStore {
         lastWorldUid = data.getString("lastWorldUid");
 
         loadPlayers(data.getConfigurationSection("players"));
+        loadIdentities(data.getConfigurationSection("identities"));
         loadPendingDeliveries(data);
         loadPendingRemovals(data.getConfigurationSection("pendingRemovals"));
         loadTrackedDiaries(data.getConfigurationSection("trackedDiaries"));
+        migrateIdentitiesFromTrackedDiaries();
         rebuildLocationIndexes();
         loadPurgeOperations(data.getConfigurationSection("purgeOperations"));
         reconcileCompetingPurgeOperations();
         loadLegacyVoidQueue(data.getConfigurationSection("voidQueue"));
+        pendingDeliveryIdsMigrated = migratePendingDeliveryIds();
     }
 
     public void reloadAutosave() {
@@ -225,6 +230,15 @@ public final class DiaryStore {
         return updateDeliveryLifecycle(playerId, token, DeliveryLifecycle.CLAIMED, DeliveryLifecycle.QUEUED);
     }
 
+    public boolean releaseDeliveryClaim(UUID token) {
+        for (UUID playerId : records.keySet()) {
+            if (releaseDeliveryClaim(playerId, token)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public boolean markDeliveryDelivered(UUID playerId, UUID token) {
         return updateDeliveryLifecycle(playerId, token, DeliveryLifecycle.CLAIMED, DeliveryLifecycle.DELIVERED);
     }
@@ -241,7 +255,8 @@ public final class DiaryStore {
         for (int i = 0; i < deliveries.size(); i++) {
             PendingDelivery delivery = deliveries.get(i);
             if (token.equals(delivery.token()) && delivery.lifecycle() == expected) {
-                deliveries.set(i, new PendingDelivery(delivery.reason(), delivery.item(), token, replacement));
+                long claimedAt = replacement == DeliveryLifecycle.CLAIMED ? Instant.now().getEpochSecond() : 0L;
+                deliveries.set(i, new PendingDelivery(delivery.reason(), delivery.item(), token, replacement, claimedAt));
                 record.pendingDeliveries.clear();
                 record.pendingDeliveries.addAll(deliveries);
                 markDirty();
@@ -346,6 +361,28 @@ public final class DiaryStore {
         }
         rebuildLocationIndexes();
         markDirty();
+    }
+
+    public List<DeliveryEntry> getDeliveryEntries() {
+        List<DeliveryEntry> entries = new ArrayList<>();
+        records.forEach((playerId, record) -> record.pendingDeliveries.forEach(delivery ->
+                entries.add(new DeliveryEntry(playerId, delivery.copy()))));
+        return entries;
+    }
+
+    public DeliveryEntry getDeliveryEntry(UUID deliveryId) {
+        return getDeliveryEntries().stream()
+                .filter(entry -> deliveryId.equals(entry.delivery().token())).findFirst().orElse(null);
+    }
+
+    public boolean cancelDelivery(UUID deliveryId) {
+        for (PlayerRecord record : records.values()) {
+            if (record.pendingDeliveries.removeIf(delivery -> deliveryId.equals(delivery.token()))) {
+                markDirty();
+                return true;
+            }
+        }
+        return false;
     }
 
     public void updateTrackedSnapshot(String diaryId, UUID ownerUuid, String ownerName, ItemStack snapshot) {
@@ -772,6 +809,7 @@ public final class DiaryStore {
                 data.set(basePath + ".itemBase64", ItemIO.toBase64(delivery.item()));
                 data.set(basePath + ".token", delivery.token() == null ? null : delivery.token().toString());
                 data.set(basePath + ".lifecycle", delivery.lifecycle().name());
+                data.set(basePath + ".claimedAt", delivery.claimedAt());
             }
 
             int removalIndex = 0;
@@ -781,6 +819,13 @@ public final class DiaryStore {
                 data.set(basePath + ".locationType", pendingRemoval.locationType().name());
                 data.set(basePath + ".holderUuid", pendingRemoval.holderUuid() == null ? null : pendingRemoval.holderUuid().toString());
             }
+        }
+
+        for (PlayerIdentity identity : identities.values()) {
+            String base = "identities." + identity.uuid();
+            data.set(base + ".name", identity.currentName());
+            data.set(base + ".aliases", identity.aliases().stream().toList());
+            data.set(base + ".lastSeen", identity.lastSeen());
         }
 
         for (Map.Entry<String, DiaryRecordState> entry : diaryRecords.entrySet()) {
@@ -915,6 +960,17 @@ public final class DiaryStore {
         }
     }
 
+    private void loadIdentities(ConfigurationSection section) {
+        if (section == null) return;
+        for (String key : section.getKeys(false)) {
+            UUID uuid = parseUuid(key);
+            if (uuid == null) continue;
+            PlayerIdentity identity = new PlayerIdentity(uuid, section.getString(key + ".name"), section.getLong(key + ".lastSeen"));
+            for (String alias : section.getStringList(key + ".aliases")) identity.observe(alias, identity.lastSeen());
+            identities.put(uuid, identity);
+        }
+    }
+
     private void loadPendingDeliveries(FileConfiguration data) {
         ConfigurationSection pending = data.getConfigurationSection("pendingDeliveries");
         if (pending != null) {
@@ -937,7 +993,8 @@ public final class DiaryStore {
                     if (item != null) {
                         record.pendingDeliveries.addLast(new PendingDelivery(parseReason(rawReason), item,
                                 parseUuid(pending.getString(basePath + ".token")), parseEnum(DeliveryLifecycle.class,
-                                pending.getString(basePath + ".lifecycle"), DeliveryLifecycle.QUEUED)));
+                                pending.getString(basePath + ".lifecycle"), DeliveryLifecycle.QUEUED),
+                                pending.getLong(basePath + ".claimedAt", 0L)));
                     }
                 }
             }
@@ -1021,6 +1078,59 @@ public final class DiaryStore {
             }
             state.location = mostRecentActive(state.locations);
             diaryRecords.put(diaryId, state);
+        }
+    }
+
+    public boolean migratePendingDeliveryIds() {
+        boolean changed = false;
+        for (PlayerRecord record : records.values()) {
+            List<PendingDelivery> migrated = new ArrayList<>();
+            for (PendingDelivery delivery : record.pendingDeliveries) {
+                if (delivery.token() == null) {
+                    migrated.add(new PendingDelivery(delivery.reason(), delivery.item(), UUID.randomUUID(),
+                            delivery.lifecycle(), delivery.claimedAt()));
+                    changed = true;
+                } else {
+                    migrated.add(delivery);
+                }
+            }
+            if (changed) {
+                record.pendingDeliveries.clear();
+                record.pendingDeliveries.addAll(migrated);
+            }
+        }
+        if (changed) {
+            markDirty();
+        }
+        return changed;
+    }
+
+    public boolean pendingDeliveryIdsMigrated() {
+        return pendingDeliveryIdsMigrated;
+    }
+
+    public void observeIdentity(UUID uuid, String name) {
+        identities.computeIfAbsent(uuid, ignored -> new PlayerIdentity(uuid, name, Instant.now().getEpochSecond()))
+                .observe(name, Instant.now().getEpochSecond());
+        markDirty();
+    }
+
+    public UUID resolveStoredPlayerUuid(String input) {
+        try { return UUID.fromString(input); } catch (IllegalArgumentException ignored) { }
+        String normalized = input.toLowerCase(Locale.ROOT);
+        List<UUID> matches = identities.values().stream()
+                .filter(identity -> identity.currentName() != null && identity.currentName().equalsIgnoreCase(input)
+                        || identity.aliases().stream().anyMatch(alias -> alias.equalsIgnoreCase(input)))
+                .map(PlayerIdentity::uuid).distinct().toList();
+        return matches.size() == 1 ? matches.getFirst() : null;
+    }
+
+    private void migrateIdentitiesFromTrackedDiaries() {
+        for (DiaryRecordState state : diaryRecords.values()) {
+            if (state.ownerUuid != null && state.ownerName != null) {
+                identities.computeIfAbsent(state.ownerUuid, ignored -> new PlayerIdentity(state.ownerUuid,
+                        state.ownerName, Instant.now().getEpochSecond()));
+            }
         }
     }
 

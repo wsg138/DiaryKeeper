@@ -5,6 +5,7 @@ import com.p2wn.diary.data.DiaryAnalyticsStore;
 import com.p2wn.diary.data.DeliveryReason;
 import com.p2wn.diary.data.DiaryStore;
 import com.p2wn.diary.data.PendingDelivery;
+import com.p2wn.diary.data.DeliveryLifecycle;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.block.ShulkerBox;
@@ -19,6 +20,7 @@ import org.bukkit.scheduler.BukkitTask;
 
 import java.util.List;
 import java.util.Set;
+import java.util.HashSet;
 import java.util.UUID;
 
 public final class DeliveryService {
@@ -30,6 +32,7 @@ public final class DeliveryService {
     private DiaryTrackerService trackerService;
     private DiaryAnalyticsStore analyticsStore;
     private PerformanceMonitor performanceMonitor;
+    private final Set<UUID> inFlightDeliveries = new HashSet<>();
 
     public DeliveryService(Plugin plugin, DiaryStore diaryStore) {
         this.plugin = plugin;
@@ -80,6 +83,7 @@ public final class DeliveryService {
     }
 
     public void reloadSettings() {
+        releaseInFlightClaims();
         stop();
         if (!diaryStore.getPlayersWithPendingDeliveries().isEmpty()) {
             ensureRunning();
@@ -88,6 +92,7 @@ public final class DeliveryService {
     }
 
     public void shutdown() {
+        releaseInFlightClaims();
         stop();
     }
 
@@ -153,14 +158,27 @@ public final class DeliveryService {
         updateDeliveryQueueSize();
     }
 
+    public void reconcileClaimedDeliveries(Player player) {
+        diaryStore.getDeliveryEntries().stream()
+                .filter(entry -> entry.playerId().equals(player.getUniqueId()))
+                .filter(entry -> entry.delivery().lifecycle() == DeliveryLifecycle.CLAIMED)
+                .filter(entry -> hasDeliveredToken(player, entry.delivery().token()))
+                .forEach(entry -> markDelivered(entry.playerId(), entry.delivery().token()));
+    }
+
     private void persistClaimThenDeliver(UUID playerId, PendingDelivery delivery) {
+        inFlightDeliveries.add(delivery.token());
         diaryStore.flushDurably().whenComplete((ignored, failure) -> Bukkit.getScheduler().runTask(plugin, () -> {
+            inFlightDeliveries.remove(delivery.token());
             if (failure != null) {
                 diaryStore.releaseDeliveryClaim(playerId, delivery.token());
+                diaryStore.flushDurably();
                 return;
             }
             Player player = Bukkit.getPlayer(playerId);
             if (player == null || !player.isOnline()) {
+                diaryStore.releaseDeliveryClaim(playerId, delivery.token());
+                diaryStore.flushDurably();
                 return;
             }
             if (hasDeliveredToken(player, delivery.token())) {
@@ -190,6 +208,14 @@ public final class DeliveryService {
                 diaryService.refreshOwnedDiaries(player);
             }
         }));
+    }
+
+    private void releaseInFlightClaims() {
+        for (UUID deliveryId : Set.copyOf(inFlightDeliveries)) {
+            diaryStore.releaseDeliveryClaim(deliveryId);
+        }
+        inFlightDeliveries.clear();
+        diaryStore.flushNowBlocking("delivery claim recovery");
     }
 
     private void markDelivered(UUID playerId, UUID deliveryId) {

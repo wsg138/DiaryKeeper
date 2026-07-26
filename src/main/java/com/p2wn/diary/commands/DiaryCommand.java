@@ -4,6 +4,8 @@ import com.p2wn.diary.DiaryPlugin;
 import com.p2wn.diary.data.TrackedDiaryRecord;
 import com.p2wn.diary.data.PurgeDestination;
 import com.p2wn.diary.data.PurgeOperation;
+import com.p2wn.diary.data.DeliveryEntry;
+import com.p2wn.diary.data.DeliveryLifecycle;
 import com.p2wn.diary.logic.DiaryService;
 import org.bukkit.Bukkit;
 import org.bukkit.OfflinePlayer;
@@ -50,6 +52,7 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
             case "find" -> handleFind(sender, args);
             case "restore" -> handleRestore(sender, args);
             case "purge" -> handlePurge(sender, args);
+            case "deliveries" -> handleDeliveries(sender, args);
             case "importwelcome" -> handleImportWelcome(sender);
             case "scan" -> handleScan(sender, args);
             case "repair" -> handleRepair(sender);
@@ -66,7 +69,7 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
             return List.of();
         }
         if (args.length == 1) {
-            return partial(List.of("reload", "issue", "status", "find", "restore", "purge", "scan", "repair", "importwelcome"), args[0]);
+            return partial(List.of("reload", "issue", "status", "find", "restore", "purge", "deliveries", "scan", "repair", "importwelcome"), args[0]);
         }
         if (args.length == 2 && "scan".equalsIgnoreCase(args[0])) {
             return partial(List.of("duplicates", "locations"), args[1]);
@@ -83,6 +86,39 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
             return partial(onlineNames, args[1]);
         }
         return List.of();
+    }
+
+    private boolean handleDeliveries(CommandSender sender, String[] args) {
+        if (args.length < 2 || "list".equalsIgnoreCase(args[1])) {
+            plugin.diaryStore().getDeliveryEntries().stream().limit(50).forEach(entry -> sender.sendMessage(
+                    "§e" + entry.delivery().token() + " §f" + entry.playerId() + " §7" + entry.delivery().lifecycle()));
+            return true;
+        }
+        if (args.length < 3) {
+            sender.sendMessage("Usage: /diary deliveries <list|status|resolve>");
+            return true;
+        }
+        UUID deliveryId;
+        try { deliveryId = UUID.fromString(args[2]); } catch (IllegalArgumentException ex) {
+            sender.sendMessage("Invalid delivery ID."); return true;
+        }
+        DeliveryEntry entry = plugin.diaryStore().getDeliveryEntry(deliveryId);
+        if (entry == null) { sender.sendMessage("Delivery not found."); return true; }
+        if ("status".equalsIgnoreCase(args[1])) {
+            sender.sendMessage("§eDelivery §f" + deliveryId + " §eplayer=§f" + entry.playerId()
+                    + " §estate=§f" + entry.delivery().lifecycle() + " §eclaimedAt=§f" + entry.delivery().claimedAt());
+            return true;
+        }
+        if (args.length < 4) { sender.sendMessage("Usage: /diary deliveries resolve <id> <retry|delivered|cancel>"); return true; }
+        boolean changed = switch (args[3].toLowerCase(Locale.ROOT)) {
+            case "retry" -> plugin.diaryStore().releaseDeliveryClaim(entry.playerId(), deliveryId);
+            case "delivered" -> plugin.diaryStore().markDeliveryDelivered(entry.playerId(), deliveryId);
+            case "cancel" -> plugin.diaryStore().cancelDelivery(deliveryId);
+            default -> false;
+        };
+        if (changed) { plugin.diaryStore().flushNowBlocking("delivery administration"); }
+        sender.sendMessage(changed ? "Delivery updated." : "Delivery could not be updated.");
+        return true;
     }
 
     private boolean handleIssue(CommandSender sender, String[] args) {
@@ -298,6 +334,10 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
     }
 
     private OfflinePlayer resolveOfflinePlayer(String input) {
+        UUID stored = plugin.diaryStore().resolveStoredPlayerUuid(input);
+        if (stored != null) {
+            return Bukkit.getOfflinePlayer(stored);
+        }
         try {
             return Bukkit.getOfflinePlayer(UUID.fromString(input));
         } catch (IllegalArgumentException ex) {

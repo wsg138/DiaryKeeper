@@ -71,6 +71,9 @@ public final class DiaryPlugin extends JavaPlugin {
         activeDiaryStore = new DiaryStore(this);
         activeDiaryStore.setPerformanceMonitor(activePerformanceMonitor);
         activeDiaryStore.load();
+        if (activeDiaryStore.pendingDeliveryIdsMigrated()) {
+            activeDiaryStore.flushNowBlocking("pending delivery ID migration");
+        }
         activeDiaryStore.reloadAutosave();
         activeDiaryAnalyticsStore = new DiaryAnalyticsStore(this);
         activeDiaryAnalyticsStore.setPerformanceMonitor(activePerformanceMonitor);
