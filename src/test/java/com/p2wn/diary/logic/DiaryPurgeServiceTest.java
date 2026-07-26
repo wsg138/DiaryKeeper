@@ -221,8 +221,16 @@ class DiaryPurgeServiceTest {
         when(config.getInt(anyString(), anyInt())).thenAnswer(invocation -> invocation.getArgument(1));
         when(store.getPlayersWithPendingDeliveries()).thenReturn(Set.of(playerId));
         when(diary.clone()).thenReturn(diary);
+        UUID deliveryId = UUID.randomUUID();
+        when(store.claimDelivery(playerId, deliveryId)).thenReturn(true);
+        when(store.flushDurably()).thenReturn(java.util.concurrent.CompletableFuture.completedFuture(null));
         com.p2wn.diary.data.PendingDelivery pending = new com.p2wn.diary.data.PendingDelivery(
-                com.p2wn.diary.data.DeliveryReason.RESTORE_ADMIN, diary, UUID.randomUUID());
+                com.p2wn.diary.data.DeliveryReason.RESTORE_ADMIN, diary, deliveryId);
+        com.p2wn.diary.data.PendingDelivery claimed = new com.p2wn.diary.data.PendingDelivery(
+                com.p2wn.diary.data.DeliveryReason.RESTORE_ADMIN, diary, deliveryId,
+                com.p2wn.diary.data.DeliveryLifecycle.CLAIMED);
+        com.p2wn.diary.data.DeliveryEntry entry = new com.p2wn.diary.data.DeliveryEntry(playerId, claimed);
+        when(store.getDeliveryEntry(deliveryId)).thenReturn(entry);
         when(store.getPendingDeliveries(playerId, 2)).thenReturn(List.of(pending));
         when(player.isOnline()).thenReturn(true);
         when(player.getInventory()).thenReturn(inventory);
@@ -230,9 +238,15 @@ class DiaryPurgeServiceTest {
         DeliveryService service = new DeliveryService(plugin, store);
         try (MockedStatic<Bukkit> bukkit = mockStatic(Bukkit.class)) {
             bukkit.when(() -> Bukkit.getPlayer(playerId)).thenReturn(player);
+            org.bukkit.scheduler.BukkitScheduler scheduler = mock(org.bukkit.scheduler.BukkitScheduler.class);
+            bukkit.when(Bukkit::getScheduler).thenReturn(scheduler);
+            when(scheduler.runTask(eq(plugin), any(Runnable.class))).thenAnswer(invocation -> {
+                invocation.<Runnable>getArgument(1).run(); return mock(org.bukkit.scheduler.BukkitTask.class);
+            });
             service.tick();
         }
-        verify(store, never()).markDeliveryDelivered(any(), any());
+        verify(inventory).addItem(diary);
+        verify(store).releaseDeliveryClaim(playerId, deliveryId);
     }
 
     @Test
