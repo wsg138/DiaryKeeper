@@ -5,6 +5,7 @@ import com.p2wn.diary.config.ConfigManager;
 import com.p2wn.diary.data.DiaryAnalyticsStore;
 import com.p2wn.diary.data.DiaryStore;
 import com.p2wn.diary.integrations.plan.DiaryPlanHook;
+import com.p2wn.diary.integrations.floodgate.FloodgateIdentityAdapter;
 import com.p2wn.diary.item.DiaryItem;
 import com.p2wn.diary.item.WelcomeBookItem;
 import com.p2wn.diary.listeners.AnvilGuardListener;
@@ -58,6 +59,7 @@ public final class DiaryPlugin extends JavaPlugin {
     private RestoreGuiListener activeRestoreGuiListener;
     private DiaryPlanHook planHook;
     private PerformanceMonitor activePerformanceMonitor;
+    private FloodgateIdentityAdapter floodgateIdentityAdapter;
 
     @Override
     public void onEnable() {
@@ -71,9 +73,7 @@ public final class DiaryPlugin extends JavaPlugin {
         activeDiaryStore = new DiaryStore(this);
         activeDiaryStore.setPerformanceMonitor(activePerformanceMonitor);
         activeDiaryStore.load();
-        if (activeDiaryStore.pendingDeliveryIdsMigrated()) {
-            activeDiaryStore.flushNowBlocking("pending delivery ID migration");
-        }
+        activeDiaryStore.flushNowBlocking("startup data migrations");
         activeDiaryStore.reloadAutosave();
         activeDiaryAnalyticsStore = new DiaryAnalyticsStore(this);
         activeDiaryAnalyticsStore.setPerformanceMonitor(activePerformanceMonitor);
@@ -106,6 +106,7 @@ public final class DiaryPlugin extends JavaPlugin {
         activeDeliveryService.setAnalyticsStore(activeDiaryAnalyticsStore);
 
         registerCommand();
+        floodgateIdentityAdapter = FloodgateIdentityAdapter.create(this, activeDiaryStore).orElse(null);
         registerListeners();
         registerPlanIntegration();
 
@@ -231,6 +232,10 @@ public final class DiaryPlugin extends JavaPlugin {
 
     public PerformanceMonitor performanceMonitor() {
         return activePerformanceMonitor;
+    }
+
+    public void observeOptionalFloodgateIdentity(org.bukkit.entity.Player player) {
+        if (floodgateIdentityAdapter != null) floodgateIdentityAdapter.observe(player);
     }
 
     private void handleWorldReset() {

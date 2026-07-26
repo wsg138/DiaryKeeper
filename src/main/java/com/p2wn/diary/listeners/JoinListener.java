@@ -17,6 +17,7 @@ public final class JoinListener implements Listener {
     @EventHandler
     public void onJoin(PlayerJoinEvent event) {
         plugin.diaryStore().observeIdentity(event.getPlayer().getUniqueId(), event.getPlayer().getName());
+        plugin.observeOptionalFloodgateIdentity(event.getPlayer());
         plugin.deliveryService().reconcileClaimedDeliveries(event.getPlayer());
         plugin.diaryPurgeService().processJoin(event.getPlayer());
         plugin.diaryService().handlePlayerJoin(event.getPlayer());

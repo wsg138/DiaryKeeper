@@ -17,6 +17,8 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletionException;
+import java.util.ArrayDeque;
+import java.util.Deque;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -196,6 +198,106 @@ class DiaryStoreTest {
         assertTrue(store.claimDelivery(player, first));
         assertTrue(store.markDeliveryDelivered(player, first));
         assertEquals(second, store.getPendingDeliveries(player, 1).getFirst().token());
+    }
+
+    @Test
+    void trackedIdentityMigrationUsesObservationTimePreservesAliasesAndSurvivesRestart() throws Exception {
+        UUID owner = UUID.randomUUID();
+        YamlConfiguration yaml = new YamlConfiguration();
+        yaml.set("identities." + owner + ".name", "OldJavaName");
+        yaml.set("identities." + owner + ".aliases", List.of("OlderAlias"));
+        yaml.set("identities." + owner + ".lastSeen", 100L);
+        yaml.set("trackedDiaries.diary.ownerUuid", owner.toString());
+        yaml.set("trackedDiaries.diary.ownerName", "ExactBedrockName");
+        yaml.set("trackedDiaries.diary.snapshotUpdatedAt", 200L);
+        yaml.save(temp.resolve("diaries.yml").toFile());
+
+        DiaryStore first = store();
+        first.load();
+        assertEquals("ExactBedrockName", first.identityForTesting(owner).currentName());
+        assertTrue(first.identityForTesting(owner).aliases().containsAll(
+                List.of("OldJavaName", "OlderAlias", "ExactBedrockName")));
+        first.flushDurably().join();
+
+        DiaryStore restarted = store();
+        restarted.load();
+        assertEquals(owner, restarted.resolveStoredPlayer("olderalias").uuid());
+        assertEquals(owner, restarted.resolveStoredPlayer(owner.toString()).uuid());
+        assertEquals("ExactBedrockName", restarted.identityForTesting(owner).currentName());
+    }
+
+    @Test
+    void olderTrackedNameBecomesAliasAndAmbiguousAliasNeverGuesses() throws Exception {
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+        YamlConfiguration yaml = new YamlConfiguration();
+        yaml.set("identities." + first + ".name", "NewName");
+        yaml.set("identities." + first + ".aliases", List.of("SharedAlias"));
+        yaml.set("identities." + first + ".lastSeen", 500L);
+        yaml.set("identities." + second + ".name", "OtherName");
+        yaml.set("identities." + second + ".aliases", List.of("sharedalias"));
+        yaml.set("identities." + second + ".lastSeen", 500L);
+        yaml.set("trackedDiaries.diary.ownerUuid", first.toString());
+        yaml.set("trackedDiaries.diary.ownerName", "OldTrackedName");
+        yaml.set("trackedDiaries.diary.snapshotUpdatedAt", 100L);
+        yaml.save(temp.resolve("diaries.yml").toFile());
+
+        DiaryStore store = store();
+        store.load();
+        assertEquals("NewName", store.identityForTesting(first).currentName());
+        assertTrue(store.identityForTesting(first).aliases().contains("OldTrackedName"));
+        assertEquals(IdentityResolution.Status.AMBIGUOUS,
+                store.resolveStoredPlayer("SHAREDALIAS").status());
+    }
+
+    @Test
+    void claimedReleaseIsNotQueuedUntilBothDurableStagesCompleteAndRestartKeepsOneEntry() {
+        Plugin plugin = mock(Plugin.class);
+        Server server = mock(Server.class);
+        BukkitScheduler scheduler = mock(BukkitScheduler.class);
+        FileConfiguration config = mock(FileConfiguration.class);
+        Deque<Runnable> async = new ArrayDeque<>();
+        Deque<Runnable> main = new ArrayDeque<>();
+        when(plugin.getDataFolder()).thenReturn(temp.toFile());
+        when(plugin.getServer()).thenReturn(server);
+        when(plugin.getConfig()).thenReturn(config);
+        when(plugin.getLogger()).thenReturn(java.util.logging.Logger.getAnonymousLogger());
+        when(plugin.isEnabled()).thenReturn(true);
+        when(server.getScheduler()).thenReturn(scheduler);
+        when(scheduler.runTaskAsynchronously(eq(plugin), any(Runnable.class))).thenAnswer(call -> {
+            async.addLast(call.getArgument(1)); return null;
+        });
+        when(scheduler.runTask(eq(plugin), any(Runnable.class))).thenAnswer(call -> {
+            main.addLast(call.getArgument(1)); return null;
+        });
+        DiaryStore store = new DiaryStore(plugin);
+        UUID player = UUID.randomUUID();
+        UUID delivery = UUID.randomUUID();
+        ItemStack item = mock(ItemStack.class, withSettings().serializable());
+        when(item.getType()).thenReturn(org.bukkit.Material.BUNDLE);
+        when(item.clone()).thenReturn(item);
+        store.queueDelivery(player, DeliveryReason.VOID_RETURN, item, delivery);
+        store.flushDurably();
+        async.removeFirst().run();
+        assertTrue(store.claimDelivery(player, delivery));
+        store.flushDurably();
+        async.removeFirst().run();
+
+        var release = store.releaseDeliveryClaimDurably(player, delivery);
+        assertEquals(DeliveryLifecycle.RELEASE_PENDING, store.getDeliveryEntry(delivery).delivery().lifecycle());
+        async.removeFirst().run();
+        assertEquals(DeliveryLifecycle.RELEASE_PENDING, store.getDeliveryEntry(delivery).delivery().lifecycle());
+        main.removeFirst().run();
+        assertEquals(DeliveryLifecycle.QUEUED, store.getDeliveryEntry(delivery).delivery().lifecycle());
+        assertFalse(release.isDone());
+        async.removeFirst().run();
+        main.removeFirst().run();
+        assertTrue(release.join());
+
+        DiaryStore restarted = new DiaryStore(plugin);
+        restarted.load();
+        assertEquals(1, restarted.getDeliveryEntries().size());
+        assertEquals(DeliveryLifecycle.QUEUED, restarted.getDeliveryEntry(delivery).delivery().lifecycle());
     }
 
 

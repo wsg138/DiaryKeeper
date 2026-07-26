@@ -21,6 +21,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
+import java.time.Instant;
+import java.util.concurrent.CompletableFuture;
 
 public final class DiaryCommand implements CommandExecutor, TabCompleter {
 
@@ -97,9 +99,7 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
                     .filter(entry -> matchesDeliveryFilter(entry, filter))
                     .sorted((left, right) -> deliverySortKey(left).compareTo(deliverySortKey(right)))
                     .skip((long) (page - 1) * 10).limit(10)
-                    .forEach(entry -> sender.sendMessage("§e" + entry.delivery().token() + " §f" + entry.playerId()
-                            + " §7" + entry.delivery().reason() + " " + entry.delivery().lifecycle()
-                            + " claimed=" + entry.delivery().claimedAt()));
+                    .forEach(entry -> sender.sendMessage(formatDelivery(entry)));
             return true;
         }
         if (args.length < 3) {
@@ -113,20 +113,47 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
         DeliveryEntry entry = plugin.diaryStore().getDeliveryEntry(deliveryId);
         if (entry == null) { sender.sendMessage("Delivery not found."); return true; }
         if ("status".equalsIgnoreCase(args[1])) {
-            sender.sendMessage("§eDelivery §f" + deliveryId + " §eplayer=§f" + entry.playerId()
-                    + " §estate=§f" + entry.delivery().lifecycle() + " §eclaimedAt=§f" + entry.delivery().claimedAt());
+            sender.sendMessage(formatDelivery(entry));
             return true;
         }
         if (args.length < 4) { sender.sendMessage("Usage: /diary deliveries resolve <id> <retry|delivered|cancel>"); return true; }
-        boolean changed = switch (args[3].toLowerCase(Locale.ROOT)) {
-            case "retry" -> plugin.diaryStore().releaseDeliveryClaim(entry.playerId(), deliveryId);
-            case "delivered" -> plugin.diaryStore().confirmDeliveryPresent(entry.playerId(), deliveryId);
-            case "cancel" -> plugin.diaryStore().cancelDelivery(deliveryId);
-            default -> false;
+        CompletableFuture<Boolean> result = switch (args[3].toLowerCase(Locale.ROOT)) {
+            case "retry" -> plugin.diaryStore().retryDeliveryDurably(deliveryId);
+            case "delivered" -> plugin.diaryStore().markDeliveryDeliveredDurably(deliveryId);
+            case "cancel" -> plugin.diaryStore().cancelDeliveryDurably(deliveryId);
+            default -> CompletableFuture.completedFuture(false);
         };
-        if (changed) { plugin.diaryStore().flushNowBlocking("delivery administration"); }
-        sender.sendMessage(changed ? "Delivery updated." : "Delivery could not be updated.");
+        result.whenComplete((changed, failure) -> {
+            if (!plugin.isEnabled()) return;
+            Bukkit.getScheduler().runTask(plugin, () -> sender.sendMessage(
+                    failure == null && Boolean.TRUE.equals(changed)
+                            ? "Delivery update durably saved."
+                            : "Delivery update failed and was not confirmed durable."));
+        });
         return true;
+    }
+
+    private String formatDelivery(DeliveryEntry entry) {
+        long now = Instant.now().getEpochSecond();
+        OfflinePlayer player = Bukkit.getOfflinePlayer(entry.playerId());
+        String name = player.getName() == null ? "unknown" : player.getName();
+        String diaryId = plugin.diaryService().getDiaryId(entry.delivery().item());
+        String error = entry.delivery().lastPersistenceError() == null ? ""
+                : " error=\"" + entry.delivery().lastPersistenceError() + "\"";
+        return "§e" + entry.delivery().token() + " §f" + name + " " + entry.playerId()
+                + " §7diary=" + diaryId + " reason=" + entry.delivery().reason()
+                + " state=" + entry.delivery().lifecycle()
+                + " created=" + age(now, entry.delivery().createdAt())
+                + " claimed=" + age(now, entry.delivery().claimedAt()) + error;
+    }
+
+    private String age(long now, long timestamp) {
+        if (timestamp <= 0L) return "never";
+        long seconds = Math.max(0L, now - timestamp);
+        if (seconds >= 86400L) return seconds / 86400L + "d";
+        if (seconds >= 3600L) return seconds / 3600L + "h";
+        if (seconds >= 60L) return seconds / 60L + "m";
+        return seconds + "s";
     }
 
     private int parsePage(String value) {
@@ -136,7 +163,8 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
     private boolean matchesDeliveryFilter(DeliveryEntry entry, String filter) {
         return switch (filter) {
             case "queued" -> entry.delivery().lifecycle() == DeliveryLifecycle.QUEUED;
-            case "claimed" -> entry.delivery().lifecycle() == DeliveryLifecycle.CLAIMED;
+            case "claimed" -> entry.delivery().lifecycle() == DeliveryLifecycle.CLAIMED
+                    || entry.delivery().lifecycle() == DeliveryLifecycle.RELEASE_PENDING;
             case "delivered" -> entry.delivery().lifecycle() == DeliveryLifecycle.DELIVERED;
             case "all" -> true;
             default -> entry.delivery().lifecycle() != DeliveryLifecycle.DELIVERED;
@@ -144,8 +172,10 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
     }
 
     private String deliverySortKey(DeliveryEntry entry) {
-        long when = entry.delivery().claimedAt();
-        return (entry.delivery().lifecycle() == DeliveryLifecycle.CLAIMED ? "0" : "1")
+        boolean claimed = entry.delivery().lifecycle() == DeliveryLifecycle.CLAIMED
+                || entry.delivery().lifecycle() == DeliveryLifecycle.RELEASE_PENDING;
+        long when = claimed ? entry.delivery().claimedAt() : entry.delivery().createdAt();
+        return (claimed ? "0" : "1")
                 + String.format(Locale.ROOT, "%020d", when) + entry.delivery().token();
     }
 
@@ -155,9 +185,9 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
             return true;
         }
 
-        OfflinePlayer target = resolveOfflinePlayer(args[1]);
+        OfflinePlayer target = resolveIssuePlayer(args[1]);
         if (target == null) {
-            sender.sendMessage("Unknown or ambiguous offline player; use UUID or diary ID.");
+            sender.sendMessage("Unknown or ambiguous player; use an exact UUID or known player name.");
             return true;
         }
         DiaryService.IssueResult result = plugin.diaryService().issueDiary(target, args[1]);
@@ -370,6 +400,14 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
     }
 
     private OfflinePlayer resolveOfflinePlayer(String input) {
+        String diaryId = plugin.diaryStore().findDiaryIdByExactOrPrefix(input);
+        if (diaryId != null) {
+            TrackedDiaryRecord tracked = plugin.diaryStore().getTrackedDiary(diaryId);
+            if (tracked != null && tracked.ownerUuid() != null) {
+                return Bukkit.getOfflinePlayer(tracked.ownerUuid());
+            }
+        }
+        if (plugin.diaryStore().isAmbiguousDiaryIdPrefix(input)) return null;
         IdentityResolution stored = plugin.diaryStore().resolveStoredPlayer(input);
         if (stored.status() == IdentityResolution.Status.FOUND) {
             return Bukkit.getOfflinePlayer(stored.uuid());
@@ -382,6 +420,23 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
         } catch (IllegalArgumentException ex) {
             return Bukkit.getPlayerExact(input);
         }
+    }
+
+    private OfflinePlayer resolveIssuePlayer(String input) {
+        IdentityResolution stored = plugin.diaryStore().resolveStoredPlayer(input);
+        if (stored.status() == IdentityResolution.Status.FOUND) {
+            return Bukkit.getOfflinePlayer(stored.uuid());
+        }
+        if (stored.status() == IdentityResolution.Status.AMBIGUOUS) return null;
+        Player online = Bukkit.getPlayerExact(input);
+        if (online != null) return online;
+        for (OfflinePlayer cached : Bukkit.getOfflinePlayers()) {
+            if (cached.getName() != null && cached.getName().equalsIgnoreCase(input)
+                    && cached.hasPlayedBefore()) {
+                return cached;
+            }
+        }
+        return null;
     }
 
     private String resolveDiaryId(String input) {

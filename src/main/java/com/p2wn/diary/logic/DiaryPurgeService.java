@@ -353,7 +353,9 @@ public final class DiaryPurgeService {
         target.setLoading(true);
         int generation = operation.verificationGeneration();
         CompletableFuture<Chunk> future = world.getChunkAtAsync(target.chunkX(), target.chunkZ(), true);
-        future.whenComplete((chunk, failure) -> Bukkit.getScheduler().runTask(plugin, () -> {
+        future.whenComplete((chunk, failure) -> {
+            if (!plugin.isEnabled()) return;
+            Bukkit.getScheduler().runTask(plugin, () -> {
             target.setLoading(false);
             PurgeOperation current = store.getPurgeOperation(operation.operationId());
             if (current != operation || operation.terminal()
@@ -371,7 +373,8 @@ public final class DiaryPurgeService {
                 ticketedChunks.put(workKey, world);
             }
             scanLoadedChunk(operation, target, chunk);
-        }));
+            });
+        });
     }
 
     private void scanLoadedChunk(PurgeOperation operation, PurgeChunkTarget target, Chunk chunk) {
@@ -595,7 +598,9 @@ public final class DiaryPurgeService {
         if (operation.deliveryToken() == null) {
             operation.setDeliveryToken(UUID.randomUUID());
         }
-        store.flushDurably().whenComplete((ignored, failure) -> Bukkit.getScheduler().runTask(plugin, () -> {
+        store.flushDurably().whenComplete((ignored, failure) -> {
+            if (!plugin.isEnabled()) return;
+            Bukkit.getScheduler().runTask(plugin, () -> {
             persistenceInFlight.remove(operation.operationId());
             if (failure != null) {
                 operation.addError("Could not persist READY_TO_RESTORE: " + failure.getMessage());
@@ -609,7 +614,8 @@ public final class DiaryPurgeService {
                 return;
             }
             restoreIfNeeded(operation);
-        }));
+            });
+        });
     }
 
     private void restoreIfNeeded(PurgeOperation operation) {
@@ -637,7 +643,9 @@ public final class DiaryPurgeService {
         operation.setRestorationOccurred(true);
         operation.setReplacementHolder(target);
         operation.setState(PurgeState.RESTORED);
-        store.flushDurably().whenComplete((ignored, failure) -> Bukkit.getScheduler().runTask(plugin, () -> {
+        store.flushDurably().whenComplete((ignored, failure) -> {
+            if (!plugin.isEnabled()) return;
+            Bukkit.getScheduler().runTask(plugin, () -> {
             if (failure != null) {
                 operation.addError("Could not persist restore outbox: " + failure.getMessage());
                 operation.setState(PurgeState.FAILED);
@@ -649,7 +657,8 @@ public final class DiaryPurgeService {
                     operation, target, reason.name());
             log(operation, "replacement queued to " + target + " owner remains " + operation.ownerUuid());
             complete(operation);
-        }));
+            });
+        });
     }
 
     private void complete(PurgeOperation operation) {

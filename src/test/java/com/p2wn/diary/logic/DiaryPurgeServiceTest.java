@@ -218,6 +218,7 @@ class DiaryPurgeServiceTest {
         org.bukkit.inventory.PlayerInventory inventory = mock(org.bukkit.inventory.PlayerInventory.class);
         ItemStack diary = mock(ItemStack.class);
         when(plugin.getConfig()).thenReturn(config);
+        when(plugin.isEnabled()).thenReturn(true);
         when(config.getInt(anyString(), anyInt())).thenAnswer(invocation -> invocation.getArgument(1));
         when(store.getPlayersWithPendingDeliveries()).thenReturn(Set.of(playerId));
         when(diary.clone()).thenReturn(diary);

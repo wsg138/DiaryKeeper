@@ -21,6 +21,8 @@ import org.bukkit.scheduler.BukkitTask;
 import java.util.List;
 import java.util.Set;
 import java.util.HashSet;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.UUID;
 
 public final class DeliveryService {
@@ -33,6 +35,7 @@ public final class DeliveryService {
     private DiaryAnalyticsStore analyticsStore;
     private PerformanceMonitor performanceMonitor;
     private final Set<UUID> inFlightDeliveries = new HashSet<>();
+    private final Map<UUID, Integer> releaseAttempts = new HashMap<>();
     private long generation;
 
     public DeliveryService(Plugin plugin, DiaryStore diaryStore) {
@@ -100,7 +103,7 @@ public final class DeliveryService {
     }
 
     private void ensureRunning() {
-        if (task != null) {
+        if (task != null || !plugin.isEnabled()) {
             return;
         }
         int interval = Math.max(10, plugin.getConfig().getInt("delivery.retry-interval-ticks", 20));
@@ -172,9 +175,11 @@ public final class DeliveryService {
     private void persistClaimThenDeliver(UUID playerId, PendingDelivery delivery) {
         long callbackGeneration = generation;
         inFlightDeliveries.add(delivery.token());
-        diaryStore.flushDurably().whenComplete((ignored, failure) -> Bukkit.getScheduler().runTask(plugin, () -> {
+        diaryStore.flushDurably().whenComplete((ignored, failure) -> {
+            if (!plugin.isEnabled()) return;
+            Bukkit.getScheduler().runTask(plugin, () -> {
             inFlightDeliveries.remove(delivery.token());
-            if (callbackGeneration != generation) {
+            if (!plugin.isEnabled() || callbackGeneration != generation) {
                 return;
             }
             if (failure != null) {
@@ -214,18 +219,48 @@ public final class DeliveryService {
             if (diaryService != null) {
                 diaryService.refreshOwnedDiaries(player);
             }
-        }));
+            });
+        });
     }
 
     private void releaseClaimDurably(UUID playerId, UUID deliveryId, long callbackGeneration) {
         diaryStore.releaseDeliveryClaimDurably(playerId, deliveryId).whenComplete((released, failure) -> {
-            if (failure != null) {
-                plugin.getLogger().warning("Delivery claim release could not be persisted for " + deliveryId);
-            }
-            if (callbackGeneration != generation || failure != null || !Boolean.TRUE.equals(released)) {
+            if (!plugin.isEnabled()) {
                 return;
             }
+            Bukkit.getScheduler().runTask(plugin, () ->
+                    finishReleaseOnMainThread(playerId, deliveryId, callbackGeneration, released, failure));
+        });
+    }
+
+    private void finishReleaseOnMainThread(UUID playerId, UUID deliveryId, long callbackGeneration,
+                                           Boolean released, Throwable failure) {
+        if (!plugin.isEnabled() || callbackGeneration != generation) return;
+        if (failure == null && Boolean.TRUE.equals(released)) {
+            releaseAttempts.remove(deliveryId);
             requestDelivery(playerId);
+            return;
+        }
+        int attempt = releaseAttempts.merge(deliveryId, 1, Integer::sum);
+        plugin.getLogger().warning("Delivery claim release could not be persisted for " + deliveryId
+                + " (attempt " + attempt + "/3).");
+        if (attempt >= 3) {
+            releaseAttempts.remove(deliveryId);
+            return;
+        }
+        long delay = 20L << (attempt - 1);
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            if (plugin.isEnabled() && callbackGeneration == generation) {
+                retryPendingRelease(playerId, deliveryId, callbackGeneration);
+            }
+        }, delay);
+    }
+
+    private void retryPendingRelease(UUID playerId, UUID deliveryId, long callbackGeneration) {
+        diaryStore.retryDeliveryDurably(deliveryId).whenComplete((released, failure) -> {
+            if (!plugin.isEnabled()) return;
+            Bukkit.getScheduler().runTask(plugin, () ->
+                    finishReleaseOnMainThread(playerId, deliveryId, callbackGeneration, released, failure));
         });
     }
 
@@ -234,18 +269,27 @@ public final class DeliveryService {
             diaryStore.releaseDeliveryClaim(deliveryId);
         }
         inFlightDeliveries.clear();
+        releaseAttempts.clear();
         diaryStore.flushNowBlocking("delivery claim recovery");
     }
 
     private void markDelivered(UUID playerId, UUID deliveryId) {
         if (diaryStore.markDeliveryDelivered(playerId, deliveryId)) {
-            diaryStore.flushDurably();
+            diaryStore.flushDurably().exceptionally(failure -> {
+                plugin.getLogger().warning("Delivery " + deliveryId
+                        + " was inserted but its DELIVERED audit state could not be persisted.");
+                return null;
+            });
         }
     }
 
     private void confirmPresent(UUID playerId, UUID deliveryId) {
         if (diaryStore.confirmDeliveryPresent(playerId, deliveryId)) {
-            diaryStore.flushDurably();
+            diaryStore.flushDurably().exceptionally(failure -> {
+                plugin.getLogger().warning("Existing delivery " + deliveryId
+                        + " was found in inventory but confirmation could not be persisted.");
+                return null;
+            });
         }
     }
 

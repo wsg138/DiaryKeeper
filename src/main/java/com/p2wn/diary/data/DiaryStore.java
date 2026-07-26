@@ -227,14 +227,50 @@ public final class DiaryStore {
     }
 
     public boolean releaseDeliveryClaim(UUID playerId, UUID token) {
-        return updateDeliveryLifecycle(playerId, token, DeliveryLifecycle.CLAIMED, DeliveryLifecycle.QUEUED);
+        return updateDeliveryLifecycle(playerId, token, DeliveryLifecycle.CLAIMED, DeliveryLifecycle.QUEUED, null);
     }
 
     public CompletableFuture<Boolean> releaseDeliveryClaimDurably(UUID playerId, UUID deliveryId) {
-        if (!releaseDeliveryClaim(playerId, deliveryId)) {
+        if (!updateDeliveryLifecycle(playerId, deliveryId, DeliveryLifecycle.CLAIMED,
+                DeliveryLifecycle.RELEASE_PENDING, null)) {
             return CompletableFuture.completedFuture(false);
         }
-        return flushDurably().thenApply(ignored -> true);
+        CompletableFuture<Boolean> result = new CompletableFuture<>();
+        flushDurably().whenComplete((ignored, firstFailure) -> {
+            if (!plugin.isEnabled()) {
+                result.completeExceptionally(new IOException("Plugin disabled during durable release"));
+                return;
+            }
+            plugin.getServer().getScheduler().runTask(plugin, () -> {
+                if (firstFailure != null) {
+                    recordDeliveryPersistenceError(playerId, deliveryId, rootMessage(firstFailure));
+                    result.completeExceptionally(firstFailure);
+                    return;
+                }
+                if (!updateDeliveryLifecycle(playerId, deliveryId, DeliveryLifecycle.RELEASE_PENDING,
+                        DeliveryLifecycle.QUEUED, null)) {
+                    result.complete(false);
+                    return;
+                }
+                flushDurably().whenComplete((saved, secondFailure) -> {
+                    if (!plugin.isEnabled()) {
+                        result.completeExceptionally(new IOException("Plugin disabled during durable release"));
+                        return;
+                    }
+                    plugin.getServer().getScheduler().runTask(plugin, () -> {
+                        if (secondFailure == null) {
+                            result.complete(true);
+                        } else {
+                            updateDeliveryLifecycle(playerId, deliveryId, DeliveryLifecycle.QUEUED,
+                                    DeliveryLifecycle.RELEASE_PENDING, rootMessage(secondFailure));
+                            recordDeliveryPersistenceError(playerId, deliveryId, rootMessage(secondFailure));
+                            result.completeExceptionally(secondFailure);
+                        }
+                    });
+                });
+            });
+        });
+        return result;
     }
 
     public boolean releaseDeliveryClaim(UUID token) {
@@ -247,7 +283,7 @@ public final class DiaryStore {
     }
 
     public boolean markDeliveryDelivered(UUID playerId, UUID token) {
-        return updateDeliveryLifecycle(playerId, token, DeliveryLifecycle.CLAIMED, DeliveryLifecycle.DELIVERED);
+        return updateDeliveryLifecycle(playerId, token, DeliveryLifecycle.CLAIMED, DeliveryLifecycle.DELIVERED, null);
     }
 
     public boolean confirmDeliveryPresent(UUID playerId, UUID deliveryId) {
@@ -256,10 +292,16 @@ public final class DiaryStore {
                 || entry.delivery().lifecycle() == DeliveryLifecycle.DELIVERED) {
             return false;
         }
-        return updateDeliveryLifecycle(playerId, deliveryId, entry.delivery().lifecycle(), DeliveryLifecycle.DELIVERED);
+        return updateDeliveryLifecycle(playerId, deliveryId, entry.delivery().lifecycle(),
+                DeliveryLifecycle.DELIVERED, null);
     }
 
     private boolean updateDeliveryLifecycle(UUID playerId, UUID token, DeliveryLifecycle expected, DeliveryLifecycle replacement) {
+        return updateDeliveryLifecycle(playerId, token, expected, replacement, null);
+    }
+
+    private boolean updateDeliveryLifecycle(UUID playerId, UUID token, DeliveryLifecycle expected,
+                                            DeliveryLifecycle replacement, String persistenceError) {
         if (token == null) {
             return false;
         }
@@ -271,8 +313,11 @@ public final class DiaryStore {
         for (int i = 0; i < deliveries.size(); i++) {
             PendingDelivery delivery = deliveries.get(i);
             if (token.equals(delivery.token()) && delivery.lifecycle() == expected) {
-                long claimedAt = replacement == DeliveryLifecycle.CLAIMED ? Instant.now().getEpochSecond() : 0L;
-                deliveries.set(i, new PendingDelivery(delivery.reason(), delivery.item(), token, replacement, claimedAt));
+                long now = Instant.now().getEpochSecond();
+                long claimedAt = replacement == DeliveryLifecycle.CLAIMED ? now : delivery.claimedAt();
+                long deliveredAt = replacement == DeliveryLifecycle.DELIVERED ? now : delivery.deliveredAt();
+                deliveries.set(i, new PendingDelivery(delivery.reason(), delivery.item(), token, replacement,
+                        delivery.createdAt(), claimedAt, deliveredAt, persistenceError));
                 record.pendingDeliveries.clear();
                 record.pendingDeliveries.addAll(deliveries);
                 markDirty();
@@ -280,6 +325,102 @@ public final class DiaryStore {
             }
         }
         return false;
+    }
+
+    private void recordDeliveryPersistenceError(UUID playerId, UUID deliveryId, String error) {
+        PlayerRecord record = records.get(playerId);
+        if (record == null) return;
+        List<PendingDelivery> deliveries = new ArrayList<>(record.pendingDeliveries);
+        for (int i = 0; i < deliveries.size(); i++) {
+            PendingDelivery delivery = deliveries.get(i);
+            if (deliveryId.equals(delivery.token())) {
+                deliveries.set(i, new PendingDelivery(delivery.reason(), delivery.item(), delivery.token(),
+                        delivery.lifecycle(), delivery.createdAt(), delivery.claimedAt(), delivery.deliveredAt(), error));
+                record.pendingDeliveries.clear();
+                record.pendingDeliveries.addAll(deliveries);
+                markDirty();
+                return;
+            }
+        }
+    }
+
+    private String rootMessage(Throwable failure) {
+        Throwable current = failure;
+        while (current.getCause() != null) current = current.getCause();
+        return current.getMessage() == null ? current.getClass().getSimpleName() : current.getMessage();
+    }
+
+    public CompletableFuture<Boolean> retryDeliveryDurably(UUID deliveryId) {
+        DeliveryEntry entry = getDeliveryEntry(deliveryId);
+        if (entry == null || entry.delivery().lifecycle() == DeliveryLifecycle.DELIVERED) {
+            return CompletableFuture.completedFuture(false);
+        }
+        DeliveryLifecycle lifecycle = entry.delivery().lifecycle();
+        if (lifecycle == DeliveryLifecycle.QUEUED) {
+            return flushDurably().thenApply(ignored -> true);
+        }
+        if (lifecycle == DeliveryLifecycle.RELEASE_PENDING
+                && !updateDeliveryLifecycle(entry.playerId(), deliveryId, DeliveryLifecycle.RELEASE_PENDING,
+                DeliveryLifecycle.CLAIMED, entry.delivery().lastPersistenceError())) {
+            return CompletableFuture.completedFuture(false);
+        }
+        return releaseDeliveryClaimDurably(entry.playerId(), deliveryId);
+    }
+
+    public CompletableFuture<Boolean> markDeliveryDeliveredDurably(UUID deliveryId) {
+        DeliveryEntry entry = getDeliveryEntry(deliveryId);
+        if (entry == null || entry.delivery().lifecycle() == DeliveryLifecycle.DELIVERED) {
+            return CompletableFuture.completedFuture(false);
+        }
+        DeliveryLifecycle previous = entry.delivery().lifecycle();
+        if (!updateDeliveryLifecycle(entry.playerId(), deliveryId, previous, DeliveryLifecycle.DELIVERED, null)) {
+            return CompletableFuture.completedFuture(false);
+        }
+        CompletableFuture<Boolean> result = new CompletableFuture<>();
+        flushDurably().whenComplete((ignored, failure) -> {
+            if (failure == null) {
+                result.complete(true);
+            } else {
+                rollbackDeliveryOnMain(entry.playerId(), deliveryId, DeliveryLifecycle.DELIVERED,
+                        previous, failure, result);
+            }
+        });
+        return result;
+    }
+
+    public CompletableFuture<Boolean> cancelDeliveryDurably(UUID deliveryId) {
+        DeliveryEntry entry = getDeliveryEntry(deliveryId);
+        if (entry == null) return CompletableFuture.completedFuture(false);
+        if (!cancelDelivery(deliveryId)) return CompletableFuture.completedFuture(false);
+        CompletableFuture<Boolean> result = new CompletableFuture<>();
+        flushDurably().whenComplete((ignored, failure) -> {
+            if (failure == null) {
+                result.complete(true);
+            } else if (!plugin.isEnabled()) {
+                result.completeExceptionally(failure);
+            } else {
+                plugin.getServer().getScheduler().runTask(plugin, () -> {
+                    records.get(entry.playerId()).pendingDeliveries.addLast(entry.delivery().copy());
+                    recordDeliveryPersistenceError(entry.playerId(), deliveryId, rootMessage(failure));
+                    result.completeExceptionally(failure);
+                });
+            }
+        });
+        return result;
+    }
+
+    private void rollbackDeliveryOnMain(UUID playerId, UUID deliveryId, DeliveryLifecycle current,
+                                        DeliveryLifecycle previous, Throwable failure,
+                                        CompletableFuture<Boolean> result) {
+        if (!plugin.isEnabled()) {
+            result.completeExceptionally(failure);
+            return;
+        }
+        plugin.getServer().getScheduler().runTask(plugin, () -> {
+            updateDeliveryLifecycle(playerId, deliveryId, current, previous, rootMessage(failure));
+            recordDeliveryPersistenceError(playerId, deliveryId, rootMessage(failure));
+            result.completeExceptionally(failure);
+        });
     }
 
     public int removeAllPendingDeliveriesByDiaryId(String diaryId) {
@@ -692,6 +833,12 @@ public final class DiaryStore {
         int maxLocations = Math.max(1,
                 plugin.getConfig().getInt("purge.retention.max-locations-per-diary", 100));
         changed |= pruneLocations(locationCutoff, maxLocations);
+        long deliveryCutoff = now - Math.max(1L,
+                plugin.getConfig().getLong("delivery.audit-retention-days", 30L)) * 86400L;
+        changed |= records.values().stream().map(record -> record.pendingDeliveries)
+                .map(deliveries -> deliveries.removeIf(delivery -> delivery.lifecycle() == DeliveryLifecycle.DELIVERED
+                        && delivery.deliveredAt() > 0L && delivery.deliveredAt() < deliveryCutoff))
+                .reduce(false, Boolean::logicalOr);
         if (changed) {
             rebuildLocationIndexes();
             markDirty();
@@ -825,7 +972,10 @@ public final class DiaryStore {
                 data.set(basePath + ".itemBase64", ItemIO.toBase64(delivery.item()));
                 data.set(basePath + ".token", delivery.token() == null ? null : delivery.token().toString());
                 data.set(basePath + ".lifecycle", delivery.lifecycle().name());
+                data.set(basePath + ".createdAt", delivery.createdAt());
                 data.set(basePath + ".claimedAt", delivery.claimedAt());
+                data.set(basePath + ".deliveredAt", delivery.deliveredAt());
+                data.set(basePath + ".lastPersistenceError", delivery.lastPersistenceError());
             }
 
             int removalIndex = 0;
@@ -842,6 +992,8 @@ public final class DiaryStore {
             data.set(base + ".name", identity.currentName());
             data.set(base + ".aliases", identity.aliases().stream().toList());
             data.set(base + ".lastSeen", identity.lastSeen());
+            data.set(base + ".xuid", identity.xuid());
+            data.set(base + ".platform", identity.platform());
         }
 
         for (Map.Entry<String, DiaryRecordState> entry : diaryRecords.entrySet()) {
@@ -983,6 +1135,7 @@ public final class DiaryStore {
             if (uuid == null) continue;
             PlayerIdentity identity = new PlayerIdentity(uuid, section.getString(key + ".name"), section.getLong(key + ".lastSeen"));
             for (String alias : section.getStringList(key + ".aliases")) identity.addAlias(alias);
+            identity.loadFloodgate(section.getString(key + ".xuid"), section.getString(key + ".platform"));
             identities.put(uuid, identity);
         }
     }
@@ -1007,10 +1160,13 @@ public final class DiaryStore {
                     String rawReason = pending.getString(basePath + ".reason", DeliveryReason.VOID_RETURN.name());
                     ItemStack item = readItem(pending, basePath + ".itemBase64", basePath + ".item");
                     if (item != null) {
+                        long createdAt = pending.getLong(basePath + ".createdAt", file.lastModified() / 1000L);
                         record.pendingDeliveries.addLast(new PendingDelivery(parseReason(rawReason), item,
                                 parseUuid(pending.getString(basePath + ".token")), parseEnum(DeliveryLifecycle.class,
-                                pending.getString(basePath + ".lifecycle"), DeliveryLifecycle.QUEUED),
-                                pending.getLong(basePath + ".claimedAt", 0L)));
+                                pending.getString(basePath + ".lifecycle"), DeliveryLifecycle.QUEUED), createdAt,
+                                pending.getLong(basePath + ".claimedAt", 0L),
+                                pending.getLong(basePath + ".deliveredAt", 0L),
+                                pending.getString(basePath + ".lastPersistenceError")));
                     }
                 }
             }
@@ -1126,26 +1282,56 @@ public final class DiaryStore {
     }
 
     public void observeIdentity(UUID uuid, String name) {
-        identities.computeIfAbsent(uuid, ignored -> new PlayerIdentity(uuid, name, Instant.now().getEpochSecond()))
-                .observe(name, Instant.now().getEpochSecond());
-        markDirty();
+        long now = Instant.now().getEpochSecond();
+        PlayerIdentity existing = identities.get(uuid);
+        if (existing == null) {
+            identities.put(uuid, new PlayerIdentity(uuid, name, now));
+            markDirty();
+        } else if (existing.observe(name, now)) {
+            markDirty();
+        }
+    }
+
+    public void observeFloodgateIdentity(UUID uuid, String name, String xuid, String platform) {
+        long now = Instant.now().getEpochSecond();
+        PlayerIdentity identity = identities.computeIfAbsent(uuid,
+                ignored -> new PlayerIdentity(uuid, name, now));
+        if (identity.observeFloodgate(name, xuid, platform, now)) markDirty();
     }
 
     public IdentityResolution resolveStoredPlayer(String input) {
         try { return IdentityResolution.found(UUID.fromString(input)); } catch (IllegalArgumentException ignored) { }
-        List<UUID> matches = identities.values().stream()
-                .filter(identity -> identity.currentName() != null && identity.currentName().equalsIgnoreCase(input)
-                        || identity.aliases().stream().anyMatch(alias -> alias.equalsIgnoreCase(input)))
+        List<UUID> currentMatches = identities.values().stream()
+                .filter(identity -> identity.currentName() != null
+                        && identity.currentName().equalsIgnoreCase(input))
                 .map(PlayerIdentity::uuid).distinct().toList();
-        return matches.size() == 1 ? IdentityResolution.found(matches.getFirst())
-                : matches.isEmpty() ? IdentityResolution.notFound() : IdentityResolution.ambiguous();
+        if (currentMatches.size() == 1) return IdentityResolution.found(currentMatches.getFirst());
+        if (currentMatches.size() > 1) return IdentityResolution.ambiguous();
+        List<UUID> aliasMatches = identities.values().stream()
+                .filter(identity -> identity.aliases().stream()
+                        .anyMatch(alias -> alias.equalsIgnoreCase(input)))
+                .map(PlayerIdentity::uuid).distinct().toList();
+        return aliasMatches.size() == 1 ? IdentityResolution.found(aliasMatches.getFirst())
+                : aliasMatches.isEmpty() ? IdentityResolution.notFound() : IdentityResolution.ambiguous();
+    }
+
+    PlayerIdentity identityForTesting(UUID uuid) {
+        return identities.get(uuid);
     }
 
     private void migrateIdentitiesFromTrackedDiaries() {
         for (DiaryRecordState state : diaryRecords.values()) {
             if (state.ownerUuid != null && state.ownerName != null) {
-                identities.computeIfAbsent(state.ownerUuid, ignored -> new PlayerIdentity(state.ownerUuid,
-                        state.ownerName, Instant.now().getEpochSecond()));
+                PlayerIdentity identity = identities.get(state.ownerUuid);
+                if (identity == null) {
+                    identities.put(state.ownerUuid, new PlayerIdentity(state.ownerUuid,
+                            state.ownerName, Math.max(0L, state.snapshotUpdatedAt)));
+                    markDirty();
+                } else if (state.snapshotUpdatedAt > identity.lastSeen()
+                        ? identity.observe(state.ownerName, state.snapshotUpdatedAt)
+                        : identity.addAlias(state.ownerName)) {
+                    markDirty();
+                }
             }
         }
     }
