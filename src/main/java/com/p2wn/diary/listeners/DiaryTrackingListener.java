@@ -109,6 +109,8 @@ public final class DiaryTrackingListener implements Listener {
             return;
         }
         plugin.diaryTrackerService().trackBlockInventory(event.getBlock(), container.getInventory(), java.util.List.of());
+        plugin.getServer().getScheduler().runTask(plugin,
+                () -> plugin.duplicateWatcher().removeBlockContainerSnapshot(event.getBlock()));
     }
 
     private void trackBlockInventory(Inventory inventory) {
@@ -161,6 +163,7 @@ public final class DiaryTrackingListener implements Listener {
             pendingInventoryScans.remove(key);
             if (player.isOnline()) {
                 plugin.diaryTrackerService().trackInventoryView(player, inventory);
+                plugin.duplicateWatcher().refreshContainerSnapshot(inventory);
             }
         }, 2L));
     }
@@ -178,6 +181,7 @@ public final class DiaryTrackingListener implements Listener {
         pendingInventoryScans.put(key, plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
             pendingInventoryScans.remove(key);
             trackBlockInventory(inventory);
+            plugin.duplicateWatcher().refreshContainerSnapshot(inventory);
         }, 2L));
     }
 

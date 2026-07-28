@@ -12,12 +12,15 @@ import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockState;
+import org.bukkit.block.Chest;
+import org.bukkit.block.DoubleChest;
 import org.bukkit.block.ShulkerBox;
 import org.bukkit.entity.HumanEntity;
 import org.bukkit.entity.Item;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
+import org.bukkit.inventory.DoubleChestInventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.BlockStateMeta;
 import org.bukkit.inventory.meta.BundleMeta;
@@ -118,6 +121,12 @@ public final class DuplicateWatcher {
         playerSnapshots.remove(playerId);
     }
 
+    public void removeBlockContainerSnapshot(Block block) {
+        if (block == null) return;
+        blockContainerSnapshots.remove(block.getWorld().getUID() + ":" + block.getChunk().getX() + ":"
+                + block.getChunk().getZ() + ":" + block.getX() + ":" + block.getY() + ":" + block.getZ());
+    }
+
     public void refreshGroundItemSnapshot(Item item) {
         if (item == null || item.isDead()) {
             return;
@@ -146,7 +155,11 @@ public final class DuplicateWatcher {
         if (!configManager.cfg().getBoolean("duplicates.warn-on-container-open", true)) {
             return;
         }
-        warnForIds(scanContainerInventory(opener, inventory), "container");
+        warnForIds(refreshContainerSnapshotOccurrences(inventory), "container");
+    }
+
+    public void refreshContainerSnapshot(Inventory inventory) {
+        refreshContainerSnapshotOccurrences(inventory);
     }
 
     public void onChunkLoad(Chunk chunk) {
@@ -206,27 +219,31 @@ public final class DuplicateWatcher {
         ensureScanTask();
     }
 
-    private List<Occurrence> scanContainerInventory(HumanEntity opener, Inventory inventory) {
+    private List<Occurrence> refreshContainerSnapshotOccurrences(Inventory inventory) {
         if (inventory == null) {
             return Collections.emptyList();
         }
-
-        String holderName = opener != null ? opener.getName() : "unknown";
-        String whereTag = "container";
-        String coords = opener != null ? coordsOf(opener.getLocation()) : "?";
-
-        InventoryHolder holder = inventory.getHolder();
-        if (holder instanceof BlockState state) {
-            Block block = state.getBlock();
-            whereTag = state.getType().name().toLowerCase(Locale.ROOT);
-            coords = coordsOf(block.getLocation());
-        } else if (holder instanceof Block block) {
-            coords = coordsOf(block.getLocation());
-        }
-
         List<Occurrence> occurrences = new ArrayList<>();
-        scanInventoryContents(inventory.getContents(), holderName, whereTag, coords, occurrences);
+        if (inventory instanceof DoubleChestInventory doubleInventory) {
+            refreshContainerSide(doubleInventory.getLeftSide().getHolder(), occurrences);
+            refreshContainerSide(doubleInventory.getRightSide().getHolder(), occurrences);
+        } else {
+            refreshContainerSide(inventory.getHolder(), occurrences);
+        }
         return occurrences;
+    }
+
+    private void refreshContainerSide(InventoryHolder holder, List<Occurrence> occurrences) {
+        if (holder instanceof BlockState state) {
+            occurrences.addAll(replaceBlockContainerSnapshot(state, inventoryFor(state)));
+        }
+    }
+
+    private Inventory inventoryFor(BlockState state) {
+        if (state instanceof Chest chest) {
+            return chest.getBlockInventory();
+        }
+        return state instanceof InventoryHolder holder ? holder.getInventory() : null;
     }
 
     private void scanInventoryContents(ItemStack[] contents, String holderName, String whereTag, String coords, List<Occurrence> out) {
@@ -289,12 +306,10 @@ public final class DuplicateWatcher {
             if (entity instanceof Item item) {
                 List<Occurrence> itemOccurrences = new ArrayList<>();
                 scanItemStack(item.getItemStack(), "ground", "item", coordsOf(item.getLocation()), itemOccurrences);
-                if (isRepairEnabled()) {
-                    if (itemOccurrences.isEmpty()) {
-                        groundItemSnapshots.remove(item.getUniqueId());
-                    } else {
-                        groundItemSnapshots.put(item.getUniqueId(), itemOccurrences);
-                    }
+                if (itemOccurrences.isEmpty()) {
+                    groundItemSnapshots.remove(item.getUniqueId());
+                } else {
+                    groundItemSnapshots.put(item.getUniqueId(), itemOccurrences);
                 }
                 occurrences.addAll(itemOccurrences);
             }
@@ -309,20 +324,33 @@ public final class DuplicateWatcher {
             if (!(state instanceof InventoryHolder holder)) {
                 continue;
             }
-            List<Occurrence> found = new ArrayList<>();
-            scanInventoryContents(holder.getInventory().getContents(), "container", "block_container",
-                    coordsOf(state.getLocation()), found);
-            String key = chunkPrefix + state.getX() + ":" + state.getY() + ":" + state.getZ();
+            List<Occurrence> found = replaceBlockContainerSnapshot(state, inventoryFor(state));
+            String key = blockContainerKey(state);
             observedContainerKeys.add(key);
-            if (found.isEmpty()) {
-                blockContainerSnapshots.remove(key);
-            } else {
-                blockContainerSnapshots.put(key, found);
-                occurrences.addAll(found);
-            }
+            occurrences.addAll(found);
         }
         blockContainerSnapshots.keySet().removeIf(key -> key.startsWith(chunkPrefix)
                 && !observedContainerKeys.contains(key));
+    }
+
+    private List<Occurrence> replaceBlockContainerSnapshot(BlockState state, Inventory inventory) {
+        String key = blockContainerKey(state);
+        List<Occurrence> found = new ArrayList<>();
+        if (inventory != null) {
+            String type = state.getType() == null ? "container" : state.getType().name().toLowerCase(Locale.ROOT);
+            scanInventoryContents(inventory.getContents(), "container", type,
+                    coordsOf(state.getLocation()), found);
+        }
+        if (found.isEmpty()) blockContainerSnapshots.remove(key); else blockContainerSnapshots.put(key, found);
+        return found;
+    }
+
+    private String blockContainerKey(BlockState state) {
+        if (state.getWorld() == null) {
+            return "unbound:" + System.identityHashCode(state);
+        }
+        return state.getWorld().getUID() + ":" + state.getX() / 16 + ":" + state.getZ() / 16 + ":"
+                + state.getX() + ":" + state.getY() + ":" + state.getZ();
     }
 
     record ChunkScanResult(List<Occurrence> occurrences, int nextEntityIndex, boolean incomplete) {}
@@ -392,11 +420,8 @@ public final class DuplicateWatcher {
     }
 
     private List<Occurrence> collectPlayerOccurrences(Player player, UUID playerId) {
-        if (!isRepairEnabled()) {
-            return scanPlayerOccurrences(player);
-        }
         refreshPlayerSnapshot(player);
-        markDuplicateScanRepair();
+        if (isRepairEnabled()) markDuplicateScanRepair();
         return playerSnapshots.getOrDefault(playerId, List.of());
     }
 
@@ -464,15 +489,6 @@ public final class DuplicateWatcher {
         }
 
         Map<String, List<Occurrence>> global = buildGlobalOccurrenceMap();
-        Map<Occurrence, Integer> triggerCounts = new HashMap<>();
-        for (Occurrence trigger : triggerOccurrences) {
-            List<Occurrence> matches = global.computeIfAbsent(trigger.diaryId(), ignored -> new ArrayList<>());
-            int triggerCount = triggerCounts.merge(trigger, 1, Integer::sum);
-            long existingCount = matches.stream().filter(trigger::equals).count();
-            if (existingCount < triggerCount) {
-                matches.add(trigger);
-            }
-        }
         Map<String, Occurrence> firstByDiaryId = new LinkedHashMap<>();
         for (Occurrence occurrence : triggerOccurrences) {
             firstByDiaryId.putIfAbsent(occurrence.diaryId(), occurrence);
