@@ -3,6 +3,7 @@ package com.p2wn.diary.listeners;
 import com.p2wn.diary.DiaryPlugin;
 import org.bukkit.block.BlockState;
 import org.bukkit.block.Container;
+import org.bukkit.block.DoubleChest;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -17,9 +18,14 @@ import org.bukkit.event.inventory.InventoryMoveItemEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.inventory.Inventory;
+import org.bukkit.inventory.InventoryHolder;
+import org.bukkit.inventory.DoubleChestInventory;
 import org.bukkit.scheduler.BukkitTask;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -186,10 +192,36 @@ public final class DiaryTrackingListener implements Listener {
     }
 
     private String inventoryKey(Inventory inventory) {
+        if (inventory instanceof DoubleChestInventory doubleInventory) {
+            return doubleChestKey(doubleInventory.getLeftSide().getHolder(), doubleInventory.getRightSide().getHolder());
+        }
+        if (inventory.getHolder() instanceof DoubleChest doubleChest) {
+            return doubleChestKey(doubleChest.getLeftSide(), doubleChest.getRightSide());
+        }
         if (inventory.getHolder() instanceof BlockState state) {
-            var block = state.getBlock();
-            return block.getWorld().getUID() + ":" + block.getX() + ":" + block.getY() + ":" + block.getZ();
+            return blockStateKey(state);
         }
         return "inventory:" + System.identityHashCode(inventory);
+    }
+
+    private String doubleChestKey(InventoryHolder left, InventoryHolder right) {
+        List<String> halfKeys = new ArrayList<>(2);
+        addDoubleChestHalfKey(halfKeys, left);
+        addDoubleChestHalfKey(halfKeys, right);
+        if (halfKeys.size() != 2) {
+            return "double-chest:" + System.identityHashCode(left) + ":" + System.identityHashCode(right);
+        }
+        Collections.sort(halfKeys);
+        return "double-chest:" + String.join("|", halfKeys);
+    }
+
+    private void addDoubleChestHalfKey(List<String> halfKeys, InventoryHolder holder) {
+        if (holder instanceof BlockState state) {
+            halfKeys.add(blockStateKey(state));
+        }
+    }
+
+    private String blockStateKey(BlockState state) {
+        return state.getWorld().getUID() + ":" + state.getX() + ":" + state.getY() + ":" + state.getZ();
     }
 }

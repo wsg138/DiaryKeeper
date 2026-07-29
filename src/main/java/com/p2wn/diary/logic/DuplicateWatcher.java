@@ -225,12 +225,19 @@ public final class DuplicateWatcher {
         }
         List<Occurrence> occurrences = new ArrayList<>();
         if (inventory instanceof DoubleChestInventory doubleInventory) {
-            refreshContainerSide(doubleInventory.getLeftSide().getHolder(), occurrences);
-            refreshContainerSide(doubleInventory.getRightSide().getHolder(), occurrences);
+            refreshDoubleChestSides(doubleInventory.getLeftSide(), doubleInventory.getRightSide(), occurrences);
+        } else if (inventory.getHolder() instanceof DoubleChest doubleChest) {
+            refreshContainerSide(doubleChest.getLeftSide(), occurrences);
+            refreshContainerSide(doubleChest.getRightSide(), occurrences);
         } else {
             refreshContainerSide(inventory.getHolder(), occurrences);
         }
         return occurrences;
+    }
+
+    private void refreshDoubleChestSides(Inventory left, Inventory right, List<Occurrence> occurrences) {
+        refreshContainerSide(left == null ? null : left.getHolder(), occurrences);
+        refreshContainerSide(right == null ? null : right.getHolder(), occurrences);
     }
 
     private void refreshContainerSide(InventoryHolder holder, List<Occurrence> occurrences) {

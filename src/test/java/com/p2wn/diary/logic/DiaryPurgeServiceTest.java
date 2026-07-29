@@ -16,6 +16,8 @@ import org.bukkit.Chunk;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.block.ShulkerBox;
+import org.bukkit.block.Chest;
+import org.bukkit.block.DoubleChest;
 import org.bukkit.World;
 import org.bukkit.block.Container;
 import org.bukkit.inventory.Inventory;
@@ -196,6 +198,53 @@ class DiaryPurgeServiceTest {
     }
 
     @Test
+    void holderBasedDoubleChestRefreshesEachHalfWithoutCombinedSnapshot() {
+        DiaryPlugin plugin = mock(DiaryPlugin.class);
+        ConfigManager config = mock(ConfigManager.class);
+        FileConfiguration yaml = mock(FileConfiguration.class);
+        DiaryItem diaryItem = mock(DiaryItem.class);
+        when(config.cfg()).thenReturn(yaml);
+        DuplicateWatcher watcher = new DuplicateWatcher(plugin, config, diaryItem);
+
+        ItemStack diary = mock(ItemStack.class);
+        Material material = mock(Material.class);
+        when(material.isAir()).thenReturn(false);
+        when(diary.getType()).thenReturn(material);
+        when(diaryItem.isDiary(diary)).thenReturn(true);
+        when(diaryItem.getDiaryId(diary)).thenReturn("diary");
+
+        World world = mock(World.class);
+        when(world.getUID()).thenReturn(UUID.randomUUID());
+        Chest leftChest = chestHalf(world, 10);
+        Chest rightChest = chestHalf(world, 11);
+        Inventory left = mock(Inventory.class);
+        Inventory right = mock(Inventory.class);
+        when(left.getHolder()).thenReturn(leftChest);
+        when(right.getHolder()).thenReturn(rightChest);
+        when(leftChest.getBlockInventory()).thenReturn(left);
+        when(rightChest.getBlockInventory()).thenReturn(right);
+        when(left.getContents()).thenReturn(new ItemStack[]{diary});
+        when(right.getContents()).thenReturn(new ItemStack[0]);
+
+        DoubleChest doubleChest = mock(DoubleChest.class);
+        when(doubleChest.getLeftSide()).thenReturn(leftChest);
+        when(doubleChest.getRightSide()).thenReturn(rightChest);
+        Inventory combined = mock(Inventory.class);
+        when(combined.getHolder()).thenReturn(doubleChest);
+
+        watcher.refreshContainerSnapshot(combined);
+        assertEquals(1, watcher.blockContainerSnapshotKeys().size());
+
+        when(right.getContents()).thenReturn(new ItemStack[]{diary});
+        watcher.refreshContainerSnapshot(combined);
+        assertEquals(2, watcher.blockContainerSnapshotKeys().size());
+
+        when(left.getContents()).thenReturn(new ItemStack[0]);
+        watcher.refreshContainerSnapshot(combined);
+        assertEquals(1, watcher.blockContainerSnapshotKeys().size());
+    }
+
+    @Test
     void fullInventoryKeepsTokenizedRestoreInThePersistentQueue() {
         Plugin plugin = mock(Plugin.class);
         DiaryStore store = mock(DiaryStore.class);
@@ -368,6 +417,15 @@ class DiaryPurgeServiceTest {
         when(chunk.getTileEntities()).thenReturn(new org.bukkit.block.BlockState[]{chest});
         when(chunk.getEntities()).thenReturn(new org.bukkit.entity.Entity[0]);
         return chunk;
+    }
+
+    private Chest chestHalf(World world, int x) {
+        Chest chest = mock(Chest.class);
+        when(chest.getWorld()).thenReturn(world);
+        when(chest.getX()).thenReturn(x);
+        when(chest.getY()).thenReturn(64);
+        when(chest.getZ()).thenReturn(0);
+        return chest;
     }
 
     private ItemStack tokenizedItem(UUID token, DiaryKeys keys, NamespacedKey deliveryKey) {
