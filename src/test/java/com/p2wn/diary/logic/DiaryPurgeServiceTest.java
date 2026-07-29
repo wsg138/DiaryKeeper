@@ -15,13 +15,17 @@ import org.bukkit.OfflinePlayer;
 import org.bukkit.Chunk;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
+import org.bukkit.Server;
 import org.bukkit.block.ShulkerBox;
 import org.bukkit.block.Chest;
 import org.bukkit.block.DoubleChest;
 import org.bukkit.World;
 import org.bukkit.block.Container;
 import org.bukkit.inventory.Inventory;
+import org.bukkit.inventory.DoubleChestInventory;
 import org.bukkit.plugin.Plugin;
+import org.bukkit.plugin.PluginManager;
+import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
@@ -234,14 +238,227 @@ class DiaryPurgeServiceTest {
 
         watcher.refreshContainerSnapshot(combined);
         assertEquals(1, watcher.blockContainerSnapshotKeys().size());
+        assertEquals(1, watcher.authoritativeOccurrenceCount("diary"));
 
         when(right.getContents()).thenReturn(new ItemStack[]{diary});
         watcher.refreshContainerSnapshot(combined);
         assertEquals(2, watcher.blockContainerSnapshotKeys().size());
+        assertEquals(2, watcher.authoritativeOccurrenceCount("diary"));
 
         when(left.getContents()).thenReturn(new ItemStack[0]);
         watcher.refreshContainerSnapshot(combined);
         assertEquals(1, watcher.blockContainerSnapshotKeys().size());
+        assertEquals(1, watcher.authoritativeOccurrenceCount("diary"));
+    }
+
+    @Test
+    void doubleChestInventoryCountsPhysicalStacksWithoutDuplicatingTheCombinedView() {
+        DiaryPlugin plugin = mock(DiaryPlugin.class);
+        ConfigManager config = mock(ConfigManager.class);
+        FileConfiguration yaml = mock(FileConfiguration.class);
+        DiaryItem diaryItem = mock(DiaryItem.class);
+        when(config.cfg()).thenReturn(yaml);
+        when(yaml.getBoolean("duplicates.warn-on-container-open", true)).thenReturn(true);
+        when(yaml.getBoolean("duplicates.staff-notify", true)).thenReturn(false);
+        when(plugin.getLogger()).thenReturn(Logger.getAnonymousLogger());
+        when(plugin.diaryPurgeService()).thenReturn(mock(DiaryPurgeService.class));
+        DuplicateWatcher watcher = new DuplicateWatcher(plugin, config, diaryItem);
+
+        ItemStack first = mock(ItemStack.class);
+        ItemStack second = mock(ItemStack.class);
+        Material material = mock(Material.class);
+        when(material.isAir()).thenReturn(false);
+        when(first.getType()).thenReturn(material);
+        when(second.getType()).thenReturn(material);
+        when(diaryItem.isDiary(first)).thenReturn(true);
+        when(diaryItem.isDiary(second)).thenReturn(true);
+        when(diaryItem.getDiaryId(first)).thenReturn("diary");
+        when(diaryItem.getDiaryId(second)).thenReturn("diary");
+
+        World world = mock(World.class);
+        when(world.getUID()).thenReturn(UUID.randomUUID());
+        Chest leftChest = chestHalf(world, 20);
+        Chest rightChest = chestHalf(world, 21);
+        Inventory left = mock(Inventory.class);
+        Inventory right = mock(Inventory.class);
+        when(left.getHolder()).thenReturn(leftChest);
+        when(right.getHolder()).thenReturn(rightChest);
+        when(leftChest.getBlockInventory()).thenReturn(left);
+        when(rightChest.getBlockInventory()).thenReturn(right);
+        when(left.getContents()).thenReturn(new ItemStack[]{first});
+        when(right.getContents()).thenReturn(new ItemStack[0]);
+        DoubleChestInventory combined = mock(DoubleChestInventory.class);
+        when(combined.getLeftSide()).thenReturn(left);
+        when(combined.getRightSide()).thenReturn(right);
+
+        watcher.refreshContainerSnapshot(combined);
+        assertEquals(1, watcher.authoritativeOccurrenceCount("diary"));
+
+        PluginManager pluginManager = mock(PluginManager.class);
+        try (MockedStatic<Bukkit> bukkit = mockStatic(Bukkit.class)) {
+            bukkit.when(Bukkit::getPluginManager).thenReturn(pluginManager);
+            watcher.onInventoryOpen(null, combined);
+            verify(pluginManager, never()).callEvent(any(com.p2wn.diary.events.DiaryDuplicateWarningEvent.class));
+
+            when(right.getContents()).thenReturn(new ItemStack[]{second});
+            watcher.onInventoryOpen(null, combined);
+            assertEquals(2, watcher.authoritativeOccurrenceCount("diary"));
+            org.mockito.ArgumentCaptor<com.p2wn.diary.events.DiaryDuplicateWarningEvent> event =
+                    org.mockito.ArgumentCaptor.forClass(com.p2wn.diary.events.DiaryDuplicateWarningEvent.class);
+            verify(pluginManager).callEvent(event.capture());
+            assertEquals(2, event.getValue().getDuplicateCount());
+        }
+    }
+
+    @Test
+    void negativeCoordinateChunkUnloadRemovesContainerSnapshot() {
+        DiaryPlugin plugin = mock(DiaryPlugin.class);
+        ConfigManager config = mock(ConfigManager.class);
+        FileConfiguration yaml = mock(FileConfiguration.class);
+        DiaryItem diaryItem = mock(DiaryItem.class);
+        when(config.cfg()).thenReturn(yaml);
+        DuplicateWatcher watcher = new DuplicateWatcher(plugin, config, diaryItem);
+
+        ItemStack diary = mock(ItemStack.class);
+        Material material = mock(Material.class);
+        when(material.isAir()).thenReturn(false);
+        when(diary.getType()).thenReturn(material);
+        when(diaryItem.isDiary(diary)).thenReturn(true);
+        when(diaryItem.getDiaryId(diary)).thenReturn("diary");
+        Inventory inventory = mock(Inventory.class);
+        when(inventory.getContents()).thenReturn(new ItemStack[]{diary});
+        Container chest = mock(Container.class);
+        when(chest.getInventory()).thenReturn(inventory);
+        World world = mock(World.class);
+        when(world.getUID()).thenReturn(UUID.randomUUID());
+        when(chest.getWorld()).thenReturn(world);
+        when(chest.getX()).thenReturn(-1);
+        when(chest.getY()).thenReturn(64);
+        when(chest.getZ()).thenReturn(-1);
+        Chunk chunk = mock(Chunk.class);
+        when(chunk.getWorld()).thenReturn(world);
+        when(chunk.getX()).thenReturn(-1);
+        when(chunk.getZ()).thenReturn(-1);
+        when(chunk.getTileEntities()).thenReturn(new org.bukkit.block.BlockState[]{chest});
+        when(chunk.getEntities()).thenReturn(new org.bukkit.entity.Entity[0]);
+
+        watcher.scanChunkItems(chunk, 0, 100);
+        assertEquals(1, watcher.blockContainerSnapshotKeys().size());
+        watcher.onChunkUnload(chunk);
+        assertTrue(watcher.blockContainerSnapshotKeys().isEmpty());
+    }
+
+    @Test
+    void startupSweepClearsContainerSnapshotsBeforeRescan() {
+        DiaryPlugin plugin = mock(DiaryPlugin.class);
+        ConfigManager config = mock(ConfigManager.class);
+        FileConfiguration yaml = mock(FileConfiguration.class);
+        DiaryItem diaryItem = mock(DiaryItem.class);
+        when(config.cfg()).thenReturn(yaml);
+        when(yaml.getBoolean("duplicate-scan.enabled", true)).thenReturn(false);
+        DuplicateWatcher watcher = new DuplicateWatcher(plugin, config, diaryItem);
+        watcher.scanChunkItems(chunkWithDiary(UUID.randomUUID(), 2, 3, diaryItem), 0, 100);
+        assertEquals(1, watcher.blockContainerSnapshotKeys().size());
+
+        watcher.sweepStartup();
+
+        assertTrue(watcher.blockContainerSnapshotKeys().isEmpty());
+    }
+
+    @Test
+    void globalScanDoesNotWarnWhileContainerSnapshotsArePartial() throws Exception {
+        DiaryPlugin plugin = mock(DiaryPlugin.class);
+        ConfigManager config = mock(ConfigManager.class);
+        FileConfiguration yaml = mock(FileConfiguration.class);
+        DiaryItem diaryItem = mock(DiaryItem.class);
+        Server server = mock(Server.class);
+        org.bukkit.scheduler.BukkitScheduler scheduler = mock(org.bukkit.scheduler.BukkitScheduler.class);
+        when(config.cfg()).thenReturn(yaml);
+        when(yaml.getBoolean("duplicate-scan.enabled", true)).thenReturn(true);
+        when(yaml.getBoolean("duplicates.warn-on-chunk-load", true)).thenReturn(true);
+        when(yaml.getBoolean("duplicates.staff-notify", true)).thenReturn(false);
+        when(plugin.getServer()).thenReturn(server);
+        when(server.getScheduler()).thenReturn(scheduler);
+        when(scheduler.runTaskTimer(any(), any(Runnable.class), anyLong(), anyLong()))
+                .thenReturn(mock(BukkitTask.class));
+        when(plugin.getLogger()).thenReturn(Logger.getAnonymousLogger());
+        when(plugin.diaryPurgeService()).thenReturn(mock(DiaryPurgeService.class));
+        DuplicateWatcher watcher = new DuplicateWatcher(plugin, config, diaryItem);
+
+        ItemStack diary = mock(ItemStack.class);
+        Material material = mock(Material.class);
+        when(material.isAir()).thenReturn(false);
+        when(diary.getType()).thenReturn(material);
+        when(diaryItem.isDiary(diary)).thenReturn(true);
+        when(diaryItem.getDiaryId(diary)).thenReturn("diary");
+
+        World world = mock(World.class);
+        UUID worldId = UUID.randomUUID();
+        when(world.getUID()).thenReturn(worldId);
+        Chunk staleChunk = chunkWithContents(world, 1, 0, new ItemStack[]{diary});
+        Chunk currentChunk = chunkWithContents(world, 2, 0, new ItemStack[]{diary});
+        watcher.scanChunkItems(staleChunk, 0, 100);
+        Container staleContainer = (Container) staleChunk.getTileEntities()[0];
+        when(staleContainer.getInventory().getContents()).thenReturn(new ItemStack[0]);
+        when(world.getLoadedChunks()).thenReturn(new Chunk[]{currentChunk, staleChunk});
+        when(world.isChunkLoaded(1, 0)).thenReturn(true);
+        when(world.isChunkLoaded(2, 0)).thenReturn(true);
+        when(world.getChunkAt(1, 0)).thenReturn(staleChunk);
+        when(world.getChunkAt(2, 0)).thenReturn(currentChunk);
+        PluginManager pluginManager = mock(PluginManager.class);
+
+        try (MockedStatic<Bukkit> bukkit = mockStatic(Bukkit.class)) {
+            bukkit.when(Bukkit::getOnlinePlayers).thenReturn(List.of());
+            bukkit.when(Bukkit::getWorlds).thenReturn(List.of(world));
+            bukkit.when(() -> Bukkit.getWorld(worldId)).thenReturn(world);
+            bukkit.when(Bukkit::getPluginManager).thenReturn(pluginManager);
+            watcher.queueGlobalScan();
+            var scanTick = DuplicateWatcher.class.getDeclaredMethod("scanTick");
+            scanTick.setAccessible(true);
+            scanTick.invoke(watcher);
+            verify(pluginManager, never()).callEvent(any(com.p2wn.diary.events.DiaryDuplicateWarningEvent.class));
+            scanTick.invoke(watcher);
+            verify(pluginManager, never()).callEvent(any(com.p2wn.diary.events.DiaryDuplicateWarningEvent.class));
+
+            when(staleContainer.getInventory().getContents()).thenReturn(new ItemStack[]{diary});
+            watcher.queueGlobalScan();
+            scanTick.invoke(watcher);
+            verify(pluginManager, never()).callEvent(any(com.p2wn.diary.events.DiaryDuplicateWarningEvent.class));
+            scanTick.invoke(watcher);
+            org.mockito.ArgumentCaptor<com.p2wn.diary.events.DiaryDuplicateWarningEvent> event =
+                    org.mockito.ArgumentCaptor.forClass(com.p2wn.diary.events.DiaryDuplicateWarningEvent.class);
+            verify(pluginManager).callEvent(event.capture());
+            assertEquals(2, event.getValue().getDuplicateCount());
+        }
+    }
+
+    @Test
+    void globalScanRequestedDuringSweepRunsAfterCurrentGeneration() throws Exception {
+        DiaryPlugin plugin = mock(DiaryPlugin.class);
+        ConfigManager config = mock(ConfigManager.class);
+        FileConfiguration yaml = mock(FileConfiguration.class);
+        Server server = mock(Server.class);
+        org.bukkit.scheduler.BukkitScheduler scheduler = mock(org.bukkit.scheduler.BukkitScheduler.class);
+        BukkitTask scanTask = mock(BukkitTask.class);
+        when(config.cfg()).thenReturn(yaml);
+        when(yaml.getBoolean("duplicate-scan.enabled", true)).thenReturn(true);
+        when(plugin.getServer()).thenReturn(server);
+        when(server.getScheduler()).thenReturn(scheduler);
+        when(scheduler.runTaskTimer(any(), any(Runnable.class), anyLong(), anyLong())).thenReturn(scanTask);
+        DuplicateWatcher watcher = new DuplicateWatcher(plugin, config, mock(DiaryItem.class));
+
+        try (MockedStatic<Bukkit> bukkit = mockStatic(Bukkit.class)) {
+            bukkit.when(Bukkit::getOnlinePlayers).thenReturn(List.of());
+            bukkit.when(Bukkit::getWorlds).thenReturn(List.of());
+            watcher.queueGlobalScan();
+            watcher.queueGlobalScan();
+            var scanTick = DuplicateWatcher.class.getDeclaredMethod("scanTick");
+            scanTick.setAccessible(true);
+            scanTick.invoke(watcher);
+            verify(scanTask, never()).cancel();
+            scanTick.invoke(watcher);
+            verify(scanTask).cancel();
+        }
     }
 
     @Test
@@ -415,6 +632,24 @@ class DiaryPurgeServiceTest {
         when(chunk.getX()).thenReturn(x);
         when(chunk.getZ()).thenReturn(z);
         when(chunk.getTileEntities()).thenReturn(new org.bukkit.block.BlockState[]{chest});
+        when(chunk.getEntities()).thenReturn(new org.bukkit.entity.Entity[0]);
+        return chunk;
+    }
+
+    private Chunk chunkWithContents(World world, int x, int z, ItemStack[] contents) {
+        Inventory inventory = mock(Inventory.class);
+        when(inventory.getContents()).thenReturn(contents);
+        Container container = mock(Container.class);
+        when(container.getInventory()).thenReturn(inventory);
+        when(container.getWorld()).thenReturn(world);
+        when(container.getX()).thenReturn(x * 16);
+        when(container.getY()).thenReturn(64);
+        when(container.getZ()).thenReturn(z * 16);
+        Chunk chunk = mock(Chunk.class);
+        when(chunk.getWorld()).thenReturn(world);
+        when(chunk.getX()).thenReturn(x);
+        when(chunk.getZ()).thenReturn(z);
+        when(chunk.getTileEntities()).thenReturn(new org.bukkit.block.BlockState[]{container});
         when(chunk.getEntities()).thenReturn(new org.bukkit.entity.Entity[0]);
         return chunk;
     }

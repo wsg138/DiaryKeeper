@@ -35,6 +35,7 @@ import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -69,6 +70,9 @@ public final class DuplicateWatcher {
     private BukkitTask periodicTask;
     private PerformanceMonitor performanceMonitor;
     private boolean purgeDuplicatesOnCurrentScan;
+    private boolean fullScanInProgress;
+    private boolean fullScanRequestedAgain;
+    private final Set<String> fullScanObservedDiaryIds = new LinkedHashSet<>();
 
     public DuplicateWatcher(Plugin plugin, ConfigManager configManager, DiaryItem diaryItem) {
         this.plugin = plugin;
@@ -84,9 +88,8 @@ public final class DuplicateWatcher {
         stopPeriodicTask();
         if (!configManager.cfg().getBoolean(DUPLICATE_SCAN_ENABLED, true)) {
             stopScanTask();
-            queuedPlayerScans.clear();
-            queuedChunkScans.clear();
-            queuedChunkKeys.clear();
+            clearScanQueues();
+            resetFullScanState();
             updateQueueSizeCounter();
             return;
         }
@@ -98,9 +101,8 @@ public final class DuplicateWatcher {
     public void shutdown() {
         stopScanTask();
         stopPeriodicTask();
-        queuedPlayerScans.clear();
-        queuedChunkScans.clear();
-        queuedChunkKeys.clear();
+        clearScanQueues();
+        resetFullScanState();
         updateQueueSizeCounter();
     }
 
@@ -177,9 +179,9 @@ public final class DuplicateWatcher {
     public void sweepStartup() {
         playerSnapshots.clear();
         groundItemSnapshots.clear();
-        queuedPlayerScans.clear();
-        queuedChunkScans.clear();
-        queuedChunkKeys.clear();
+        blockContainerSnapshots.clear();
+        clearScanQueues();
+        resetFullScanState();
         queueGlobalScan();
     }
 
@@ -187,7 +189,12 @@ public final class DuplicateWatcher {
         if (!configManager.cfg().getBoolean(DUPLICATE_SCAN_ENABLED, true)) {
             return;
         }
+        if (fullScanInProgress) {
+            fullScanRequestedAgain = true;
+            return;
+        }
 
+        beginFullScan();
         for (Player player : Bukkit.getOnlinePlayers()) {
             queuePlayerScan(player.getUniqueId());
         }
@@ -356,7 +363,8 @@ public final class DuplicateWatcher {
         if (state.getWorld() == null) {
             return "unbound:" + System.identityHashCode(state);
         }
-        return state.getWorld().getUID() + ":" + state.getX() / 16 + ":" + state.getZ() / 16 + ":"
+        return state.getWorld().getUID() + ":" + Math.floorDiv(state.getX(), 16) + ":"
+                + Math.floorDiv(state.getZ(), 16) + ":"
                 + state.getX() + ":" + state.getY() + ":" + state.getZ();
     }
 
@@ -364,6 +372,10 @@ public final class DuplicateWatcher {
 
     Set<String> blockContainerSnapshotKeys() {
         return Set.copyOf(blockContainerSnapshots.keySet());
+    }
+
+    int authoritativeOccurrenceCount(String diaryId) {
+        return buildGlobalOccurrenceMap().getOrDefault(diaryId, List.of()).size();
     }
 
     private void queueChunkScan(Chunk chunk) {
@@ -404,8 +416,11 @@ public final class DuplicateWatcher {
 
         updateQueueSizeCounter();
         if (queuedPlayerScans.isEmpty() && queuedChunkScans.isEmpty()) {
-            purgeDuplicatesOnCurrentScan = false;
-            stopScanTask();
+            completeFullScan();
+            if (!fullScanInProgress && queuedPlayerScans.isEmpty() && queuedChunkScans.isEmpty()) {
+                purgeDuplicatesOnCurrentScan = false;
+                stopScanTask();
+            }
         }
     }
 
@@ -495,36 +510,43 @@ public final class DuplicateWatcher {
             return;
         }
 
-        Map<String, List<Occurrence>> global = buildGlobalOccurrenceMap();
-        Map<String, Occurrence> firstByDiaryId = new LinkedHashMap<>();
+        Set<String> diaryIds = new LinkedHashSet<>();
         for (Occurrence occurrence : triggerOccurrences) {
-            firstByDiaryId.putIfAbsent(occurrence.diaryId(), occurrence);
+            diaryIds.add(occurrence.diaryId());
         }
+        if (fullScanInProgress) {
+            fullScanObservedDiaryIds.addAll(diaryIds);
+            return;
+        }
+        warnForDiaryIds(diaryIds, scopeTag);
+    }
 
-        for (Occurrence occurrence : firstByDiaryId.values()) {
-            List<Occurrence> matches = global.getOrDefault(occurrence.diaryId(), List.of());
+    private void warnForDiaryIds(Set<String> diaryIds, String scopeTag) {
+        Map<String, List<Occurrence>> global = buildGlobalOccurrenceMap();
+        for (String diaryId : diaryIds) {
+            List<Occurrence> matches = global.getOrDefault(diaryId, List.of());
             if (plugin instanceof DiaryPlugin diaryPlugin && !matches.isEmpty()) {
                 diaryPlugin.diaryPurgeService().onObservedCopy(
-                        occurrence.diaryId(), scopeTag + " " + occurrence.coords(), matches.size());
+                        diaryId, scopeTag + " " + matches.getFirst().coords(), matches.size());
             }
             if (matches.size() <= 1) {
                 continue;
             }
 
             if (purgeDuplicatesOnCurrentScan && plugin instanceof DiaryPlugin diaryPlugin) {
-                TrackedDiaryRecord record = diaryPlugin.diaryStore().getTrackedDiary(occurrence.diaryId());
+                TrackedDiaryRecord record = diaryPlugin.diaryStore().getTrackedDiary(diaryId);
                 if (record != null && record.snapshot() != null
-                        && diaryPlugin.diaryStore().getPurgeOperationsForDiary(occurrence.diaryId()).stream()
+                        && diaryPlugin.diaryStore().getPurgeOperationsForDiary(diaryId).stream()
                         .noneMatch(operation -> !operation.terminal())) {
                     diaryPlugin.diaryPurgeService().begin(record, PurgeDestination.OWNER, null);
                 }
             }
-            if (!shouldWarn(occurrence.diaryId())) {
+            if (!shouldWarn(diaryId)) {
                 continue;
             }
 
-            String message = buildWarningMessage(occurrence.diaryId(), matches, scopeTag);
-            Bukkit.getPluginManager().callEvent(new DiaryDuplicateWarningEvent(occurrence.diaryId(), matches.size(), scopeTag, message));
+            String message = buildWarningMessage(diaryId, matches, scopeTag);
+            Bukkit.getPluginManager().callEvent(new DiaryDuplicateWarningEvent(diaryId, matches.size(), scopeTag, message));
             plugin.getLogger().warning(message);
 
             if (configManager.cfg().getBoolean(DUPLICATES_STAFF_NOTIFY, true)) {
@@ -535,6 +557,42 @@ public final class DuplicateWatcher {
                 }
             }
         }
+    }
+
+    private void beginFullScan() {
+        playerSnapshots.clear();
+        groundItemSnapshots.clear();
+        blockContainerSnapshots.clear();
+        clearScanQueues();
+        fullScanObservedDiaryIds.clear();
+        fullScanInProgress = true;
+    }
+
+    private void completeFullScan() {
+        if (!fullScanInProgress) {
+            return;
+        }
+        Set<String> observedDiaryIds = Set.copyOf(fullScanObservedDiaryIds);
+        fullScanObservedDiaryIds.clear();
+        fullScanInProgress = false;
+        warnForDiaryIds(observedDiaryIds, "completed-global-scan");
+        if (fullScanRequestedAgain) {
+            fullScanRequestedAgain = false;
+            queueGlobalScan();
+        }
+    }
+
+    private void clearScanQueues() {
+        queuedPlayerScans.clear();
+        queuedChunkScans.clear();
+        queuedChunkKeys.clear();
+    }
+
+    private void resetFullScanState() {
+        fullScanInProgress = false;
+        fullScanRequestedAgain = false;
+        fullScanObservedDiaryIds.clear();
+        purgeDuplicatesOnCurrentScan = false;
     }
 
     private Map<String, List<Occurrence>> buildGlobalOccurrenceMap() {

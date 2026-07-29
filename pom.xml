@@ -5,7 +5,7 @@
 
     <groupId>com.p2wn</groupId>
     <artifactId>DiaryKeeper</artifactId>
-    <version>1.4.7</version>
+    <version>1.4.8</version>
     <name>DiaryKeeper</name>
     <description>One-of-a-kind, owner-editable collectible diaries</description>
 
