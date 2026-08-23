@@ -5,6 +5,8 @@
 Owner-editable collectible diary plugin with persistent delivery, multi-location tracking,
 duplicate detection, and restart-safe administrative purge/restore operations.
 
+For the current **player-facing Enthusia SMP behavior**—first-join diaries, owner-only editing, storage restrictions, destruction protection, void returns, duplicate handling, and Bedrock ownership support—see **[`PLAYER_GUIDE.md`](PLAYER_GUIDE.md)**. This README remains the administrative/recovery reference.
+
 ## Administrative recovery
 
 All commands use `diary.admin` for backward compatibility.
