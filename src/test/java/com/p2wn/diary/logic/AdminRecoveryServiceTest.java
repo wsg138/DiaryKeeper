@@ -71,6 +71,8 @@ class AdminRecoveryServiceTest {
         verify(fixture.store).flushNowBlocking("emergency recovery cleanup");
         verify(fixture.store).flushNowBlocking("emergency recovery direct grant");
         verify(fixture.pdc).remove(fixture.deliveryKey);
+        verify(fixture.tracker).trackPlayerInventory(fixture.admin);
+        verify(fixture.duplicateWatcher).refreshPlayerSnapshot(fixture.admin);
         verify(fixture.diaryService).refreshOwnedDiaries(fixture.admin);
         verify(fixture.delivery, never()).queue(any(), any(), any(), any());
     }
@@ -92,6 +94,8 @@ class AdminRecoveryServiceTest {
                 eq(fixture.adminId), eq(DeliveryReason.RESTORE_ADMIN),
                 eq(fixture.snapshot), any(UUID.class));
         verify(fixture.store).flushNowBlocking("emergency recovery queued replacement");
+        verify(fixture.tracker, never()).trackPlayerInventory(any());
+        verify(fixture.duplicateWatcher, never()).refreshPlayerSnapshot(any());
         verify(fixture.diaryService, never()).refreshOwnedDiaries(any());
     }
 
@@ -101,6 +105,8 @@ class AdminRecoveryServiceTest {
         DiaryPurgeService purge = mock(DiaryPurgeService.class);
         DiaryService diaryService = mock(DiaryService.class);
         DeliveryService delivery = mock(DeliveryService.class);
+        DiaryTrackerService tracker = mock(DiaryTrackerService.class);
+        DuplicateWatcher duplicateWatcher = mock(DuplicateWatcher.class);
         DiaryKeys keys = mock(DiaryKeys.class);
         NamespacedKey deliveryKey = mock(NamespacedKey.class);
         Player admin = mock(Player.class);
@@ -115,6 +121,8 @@ class AdminRecoveryServiceTest {
         when(plugin.diaryPurgeService()).thenReturn(purge);
         when(plugin.diaryService()).thenReturn(diaryService);
         when(plugin.deliveryService()).thenReturn(delivery);
+        when(plugin.diaryTrackerService()).thenReturn(tracker);
+        when(plugin.duplicateWatcher()).thenReturn(duplicateWatcher);
         when(plugin.diaryKeys()).thenReturn(keys);
         when(plugin.getLogger()).thenReturn(Logger.getAnonymousLogger());
         when(keys.deliveryToken()).thenReturn(deliveryKey);
@@ -130,7 +138,8 @@ class AdminRecoveryServiceTest {
         TrackedDiaryRecord record = new TrackedDiaryRecord(
                 "diary", ownerId, "owner", snapshot, null, List.of(), 1L);
         return new Fixture(new AdminRecoveryService(plugin), store, purge, diaryService,
-                delivery, admin, inventory, snapshot, pdc, deliveryKey, adminId, ownerId, record);
+                delivery, tracker, duplicateWatcher, admin, inventory, snapshot, pdc,
+                deliveryKey, adminId, ownerId, record);
     }
 
     private ItemStack mockItem() {
@@ -146,6 +155,8 @@ class AdminRecoveryServiceTest {
             DiaryPurgeService purge,
             DiaryService diaryService,
             DeliveryService delivery,
+            DiaryTrackerService tracker,
+            DuplicateWatcher duplicateWatcher,
             Player admin,
             PlayerInventory inventory,
             ItemStack snapshot,
