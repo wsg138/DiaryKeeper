@@ -276,7 +276,9 @@ public final class DiaryStore {
         if (record == null || record.pendingDeliveries.isEmpty()) {
             return false;
         }
-        boolean removed = record.pendingDeliveries.removeIf(delivery -> diaryId.equals(extractDiaryId(delivery.item())));
+        boolean removed = record.pendingDeliveries.removeIf(delivery ->
+                delivery.lifecycle() != DeliveryLifecycle.DELIVERED
+                        && diaryId.equals(extractDiaryId(delivery.item())));
         if (removed) {
             markDirty();
         }
@@ -488,7 +490,9 @@ public final class DiaryStore {
         int removed = 0;
         for (PlayerRecord record : records.values()) {
             int before = record.pendingDeliveries.size();
-            record.pendingDeliveries.removeIf(delivery -> diaryId.equals(extractDiaryId(delivery.item())));
+            record.pendingDeliveries.removeIf(delivery ->
+                    delivery.lifecycle() != DeliveryLifecycle.DELIVERED
+                            && diaryId.equals(extractDiaryId(delivery.item())));
             removed += before - record.pendingDeliveries.size();
         }
         if (removed > 0) {
@@ -500,7 +504,8 @@ public final class DiaryStore {
     public boolean hasPendingDelivery(UUID playerId, String diaryId) {
         PlayerRecord record = records.get(playerId);
         return record != null && record.pendingDeliveries.stream()
-                .anyMatch(delivery -> diaryId.equals(extractDiaryId(delivery.item())));
+                .anyMatch(delivery -> delivery.lifecycle() != DeliveryLifecycle.DELIVERED
+                        && diaryId.equals(extractDiaryId(delivery.item())));
     }
 
     public int getPendingDeliveryCount(UUID playerId) {

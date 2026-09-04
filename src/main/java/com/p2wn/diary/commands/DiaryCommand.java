@@ -117,7 +117,8 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
             return true;
         }
         if (args.length < 4) { sender.sendMessage("Usage: /diary deliveries resolve <id> <retry|delivered|cancel>"); return true; }
-        CompletableFuture<Boolean> result = switch (args[3].toLowerCase(Locale.ROOT)) {
+        String deliveryAction = args[3].toLowerCase(Locale.ROOT);
+        CompletableFuture<Boolean> result = switch (deliveryAction) {
             case "retry" -> plugin.diaryStore().retryDeliveryDurably(deliveryId);
             case "delivered" -> plugin.diaryStore().markDeliveryDeliveredDurably(deliveryId);
             case "cancel" -> plugin.diaryStore().cancelDeliveryDurably(deliveryId);
@@ -125,10 +126,15 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
         };
         result.whenComplete((changed, failure) -> {
             if (!plugin.isEnabled()) return;
-            Bukkit.getScheduler().runTask(plugin, () -> sender.sendMessage(
-                    failure == null && Boolean.TRUE.equals(changed)
-                            ? "Delivery update durably saved."
-                            : "Delivery update failed and was not confirmed durable."));
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                boolean success = failure == null && Boolean.TRUE.equals(changed);
+                if (success && "retry".equals(deliveryAction)) {
+                    plugin.deliveryService().requestDelivery(entry.playerId());
+                }
+                sender.sendMessage(success
+                        ? "Delivery update durably saved."
+                        : "Delivery update failed and was not confirmed durable.");
+            });
         });
         return true;
     }
@@ -271,8 +277,10 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
 
         String mode = args[2].toLowerCase(Locale.ROOT);
         if ("duplicate".equals(mode)) {
-            plugin.diaryPurgeService().restoreDuplicate(record, sender instanceof Player player ? player : null);
-            sender.sendMessage(plugin.configManager().msg("restore.duplicate-started"));
+            boolean queued = plugin.diaryPurgeService().restoreDuplicate(
+                    record, sender instanceof Player player ? player : null);
+            sender.sendMessage(plugin.configManager().msg(
+                    queued ? "restore.duplicate-started" : "restore.duplicate-blocked"));
             return true;
         }
         if ("admin".equals(mode) && !(sender instanceof Player)) {

@@ -130,6 +130,17 @@ class DiaryPurgeServiceTest {
     }
 
     @Test
+    void intentionalDuplicateIsBlockedWhilePurgeIsActive() {
+        Fixture fixture = fixture();
+        Player admin = mock(Player.class);
+        PurgeOperation active = operation(PurgeDestination.OWNER);
+        when(fixture.store.getActivePurgeOperation("diary")).thenReturn(active);
+
+        assertFalse(fixture.service.restoreDuplicate(record(), admin));
+        verify(fixture.delivery, never()).queue(any(), any(), any(), any());
+    }
+
+    @Test
     void repairDiscoveryIncludesChestOnlyDuplicate() throws Exception {
         DiaryPlugin plugin = mock(DiaryPlugin.class);
         ConfigManager config = mock(ConfigManager.class);

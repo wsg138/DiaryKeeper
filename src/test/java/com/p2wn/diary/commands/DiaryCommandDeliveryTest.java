@@ -82,6 +82,7 @@ class DiaryCommandDeliveryTest {
                 .thenReturn(CompletableFuture.completedFuture(true));
         f.run("deliveries", "resolve", queued.delivery().token().toString(), "retry");
         assertEquals(List.of("Delivery update durably saved."), f.messages);
+        verify(f.delivery).requestDelivery(queued.playerId());
 
         f.messages.clear();
         when(f.store.cancelDeliveryDurably(queued.delivery().token()))
@@ -96,6 +97,7 @@ class DiaryCommandDeliveryTest {
         final DiaryPlugin plugin = mock(DiaryPlugin.class);
         final DiaryStore store = mock(DiaryStore.class);
         final DiaryService service = mock(DiaryService.class);
+        final com.p2wn.diary.logic.DeliveryService delivery = mock(com.p2wn.diary.logic.DeliveryService.class);
         final CommandSender sender = mock(CommandSender.class);
         final Command command = mock(Command.class);
         final List<String> messages = new ArrayList<>();
@@ -108,6 +110,7 @@ class DiaryCommandDeliveryTest {
                     .when(sender).sendMessage(anyString());
             when(plugin.diaryStore()).thenReturn(store);
             when(plugin.diaryService()).thenReturn(service);
+            when(plugin.deliveryService()).thenReturn(delivery);
             when(plugin.isEnabled()).thenReturn(true);
             when(service.getDiaryId(any())).thenReturn("diary");
             OfflinePlayer offline = mock(OfflinePlayer.class);

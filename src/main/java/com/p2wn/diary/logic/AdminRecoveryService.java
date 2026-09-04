@@ -12,9 +12,8 @@ import org.bukkit.inventory.ItemStack;
 import java.util.UUID;
 
 /**
- * Administrative recovery helpers that deliberately bypass the normal purge/restore
- * workflow. These actions are intended for cases where staff know the tracked copy is
- * gone and need one clean replacement without leaving stale delivery entries behind.
+ * Administrative recovery helpers for cases where staff know the tracked
+ * physical diary is gone and need one clean replacement.
  */
 public final class AdminRecoveryService {
 
@@ -43,12 +42,11 @@ public final class AdminRecoveryService {
     }
 
     /**
-     * Cancels any still-destructive purge for this diary, clears stale open deliveries,
-     * and gives exactly one saved snapshot to the executing administrator.
+     * Cancels an active destructive purge, clears stale open deliveries,
+     * invalidates stale active location observations, and creates exactly one
+     * clean saved copy for the executing administrator.
      *
-     * <p>The diary's embedded owner data is not rewritten. If the admin inventory is
-     * full, one replacement is queued for that admin after the stale entries have been
-     * removed.</p>
+     * <p>The diary owner metadata is not rewritten.</p>
      */
     public ForceGrantResult forceGiveToAdmin(TrackedDiaryRecord record, Player admin) {
         if (record == null || record.snapshot() == null) {
@@ -68,9 +66,6 @@ public final class AdminRecoveryService {
             cancelledPurgeId = active.operationId();
         }
 
-        // The old duplicate action could leave several queued copies behind while a
-        // purge repeatedly removed them. Remove only open entries so delivered audit
-        // history is preserved.
         int removed = 0;
         for (DeliveryEntry entry : plugin.diaryStore().getDeliveryEntries()) {
             String entryDiaryId = plugin.diaryService().getDiaryId(entry.delivery().item());
@@ -80,14 +75,25 @@ public final class AdminRecoveryService {
                 removed++;
             }
         }
-        plugin.diaryStore().flushIfDirty();
+
+        // Emergency recovery means staff have explicitly asserted that prior tracked
+        // physical locations are stale. Keep them as history but stop treating them as
+        // active before establishing the replacement.
+        plugin.diaryStore().markAllLocationsInactive(record.diaryId());
+        plugin.diaryStore().flushNowBlocking("emergency recovery cleanup");
 
         ItemStack snapshot = record.snapshot();
+        clearDeliveryToken(snapshot);
+
         if (admin.getInventory().addItem(snapshot).isEmpty()) {
             admin.updateInventory();
+            // The executing admin may not be the diary owner. refreshOwnedDiaries()
+            // therefore cannot replace the physical-location and duplicate tracking
+            // that must happen for every direct emergency grant.
             plugin.diaryTrackerService().trackPlayerInventory(admin);
             plugin.duplicateWatcher().refreshPlayerSnapshot(admin);
             plugin.diaryService().refreshOwnedDiaries(admin);
+            plugin.diaryStore().flushNowBlocking("emergency recovery direct grant");
             plugin.getLogger().warning("[Diary Recovery] Force-granted diary=" + record.diaryId()
                     + " to admin=" + admin.getName() + "/" + admin.getUniqueId()
                     + " staleDeliveriesRemoved=" + removed
@@ -102,6 +108,7 @@ public final class AdminRecoveryService {
                 snapshot,
                 token
         );
+        plugin.diaryStore().flushNowBlocking("emergency recovery queued replacement");
         plugin.getLogger().warning("[Diary Recovery] Force-grant queued because admin inventory is full diary="
                 + record.diaryId() + " admin=" + admin.getName() + "/" + admin.getUniqueId()
                 + " delivery=" + token + " staleDeliveriesRemoved=" + removed
@@ -110,17 +117,22 @@ public final class AdminRecoveryService {
     }
 
     /**
-     * Creates the legacy owner-targeted duplicate only when no active purge can eat it.
+     * Creates an owner-targeted duplicate only when the core purge service says
+     * doing so is safe.
      */
     public boolean queueOwnerDuplicateIfSafe(TrackedDiaryRecord record, Player requestedAdmin) {
-        if (record == null || record.snapshot() == null) {
-            return false;
+        return plugin.diaryPurgeService().restoreDuplicate(record, requestedAdmin);
+    }
+
+    private void clearDeliveryToken(ItemStack item) {
+        if (item == null || !item.hasItemMeta()) {
+            return;
         }
-        PurgeOperation active = plugin.diaryStore().getActivePurgeOperation(record.diaryId());
-        if (active != null && !active.terminal()) {
-            return false;
+        var meta = item.getItemMeta();
+        if (meta == null) {
+            return;
         }
-        plugin.diaryPurgeService().restoreDuplicate(record, requestedAdmin);
-        return true;
+        meta.getPersistentDataContainer().remove(plugin.diaryKeys().deliveryToken());
+        item.setItemMeta(meta);
     }
 }

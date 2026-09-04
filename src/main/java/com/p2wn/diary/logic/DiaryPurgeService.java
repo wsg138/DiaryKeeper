@@ -230,9 +230,17 @@ public final class DiaryPurgeService {
         return operations.isEmpty() ? null : operations.getFirst();
     }
 
-    public void restoreDuplicate(TrackedDiaryRecord record, Player requestedAdmin) {
+    public boolean restoreDuplicate(TrackedDiaryRecord record, Player requestedAdmin) {
         if (record == null || record.snapshot() == null) {
-            return;
+            return false;
+        }
+        PurgeOperation active = store.getActivePurgeOperation(record.diaryId());
+        if (active != null && !active.terminal()) {
+            plugin.getLogger().warning("[Diary Purge] Blocked intentional duplicate restore diary=" + record.diaryId()
+                    + " activeOperation=" + active.operationId()
+                    + " state=" + active.state()
+                    + " requestedBy=" + adminLabel(requestedAdmin));
+            return false;
         }
         UUID token = UUID.randomUUID();
         plugin.deliveryService().queue(record.ownerUuid(), DeliveryReason.RESTORE_DUPLICATE, record.snapshot(), token);
@@ -240,6 +248,7 @@ public final class DiaryPurgeService {
                 "intentional duplicate");
         plugin.getLogger().warning("[Diary Purge] Intentional duplicate restore diary=" + record.diaryId()
                 + " requestedBy=" + adminLabel(requestedAdmin));
+        return true;
     }
 
     public void onObservedCopy(String diaryId, String detail, int occurrenceCount) {

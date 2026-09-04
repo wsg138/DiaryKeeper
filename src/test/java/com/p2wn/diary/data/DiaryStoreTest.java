@@ -185,6 +185,37 @@ class DiaryStoreTest {
     }
 
     @Test
+    void purgeQueueCleanupPreservesDeliveredAuditHistory() {
+        DiaryStore store = store();
+        UUID player = UUID.randomUUID();
+        UUID queuedToken = UUID.randomUUID();
+        UUID deliveredToken = UUID.randomUUID();
+        org.bukkit.NamespacedKey diaryKey = new org.bukkit.NamespacedKey("diarykeeper", "diary_id");
+        ItemStack item = mock(ItemStack.class);
+        org.bukkit.inventory.meta.ItemMeta meta = mock(org.bukkit.inventory.meta.ItemMeta.class);
+        org.bukkit.persistence.PersistentDataContainer pdc = mock(org.bukkit.persistence.PersistentDataContainer.class);
+        when(item.getType()).thenReturn(org.bukkit.Material.WRITABLE_BOOK);
+        when(item.clone()).thenReturn(item);
+        when(item.hasItemMeta()).thenReturn(true);
+        when(item.getItemMeta()).thenReturn(meta);
+        when(meta.getPersistentDataContainer()).thenReturn(pdc);
+        when(pdc.getKeys()).thenReturn(java.util.Set.of(diaryKey));
+        when(pdc.get(diaryKey, org.bukkit.persistence.PersistentDataType.STRING)).thenReturn("diary");
+
+        store.queueDelivery(player, DeliveryReason.RESTORE_DUPLICATE, item, queuedToken);
+        store.queueDelivery(player, DeliveryReason.RESTORE_OWNER, item, deliveredToken);
+        assertTrue(store.claimDelivery(player, deliveredToken));
+        assertTrue(store.markDeliveryDelivered(player, deliveredToken));
+
+        assertEquals(1, store.removeAllPendingDeliveriesByDiaryId("diary"));
+        assertNull(store.getDeliveryEntry(queuedToken));
+        DeliveryEntry retained = store.getDeliveryEntry(deliveredToken);
+        assertNotNull(retained);
+        assertEquals(DeliveryLifecycle.DELIVERED, retained.delivery().lifecycle());
+        assertFalse(store.hasPendingDelivery(player, "diary"));
+    }
+
+    @Test
     void deliveredEntryDoesNotBlockTheNextQueuedDelivery() {
         DiaryStore store = store();
         UUID player = UUID.randomUUID();
