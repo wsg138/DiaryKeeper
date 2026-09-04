@@ -87,6 +87,11 @@ public final class AdminRecoveryService {
 
         if (admin.getInventory().addItem(snapshot).isEmpty()) {
             admin.updateInventory();
+            // The executing admin may not be the diary owner. refreshOwnedDiaries()
+            // therefore cannot replace the physical-location and duplicate tracking
+            // that must happen for every direct emergency grant.
+            plugin.diaryTrackerService().trackPlayerInventory(admin);
+            plugin.duplicateWatcher().refreshPlayerSnapshot(admin);
             plugin.diaryService().refreshOwnedDiaries(admin);
             plugin.diaryStore().flushNowBlocking("emergency recovery direct grant");
             plugin.getLogger().warning("[Diary Recovery] Force-granted diary=" + record.diaryId()
