@@ -1,6 +1,8 @@
 package com.p2wn.diary.logic;
 
 import com.p2wn.diary.DiaryPlugin;
+import com.p2wn.diary.data.DeliveryEntry;
+import com.p2wn.diary.data.DeliveryLifecycle;
 import com.p2wn.diary.data.DeliveryReason;
 import com.p2wn.diary.data.PurgeOperation;
 import com.p2wn.diary.data.TrackedDiaryRecord;
@@ -41,7 +43,7 @@ public final class AdminRecoveryService {
     }
 
     /**
-     * Cancels any still-destructive purge for this diary, clears stale queued copies,
+     * Cancels any still-destructive purge for this diary, clears stale open deliveries,
      * and gives exactly one saved snapshot to the executing administrator.
      *
      * <p>The diary's embedded owner data is not rewritten. If the admin inventory is
@@ -67,9 +69,17 @@ public final class AdminRecoveryService {
         }
 
         // The old duplicate action could leave several queued copies behind while a
-        // purge repeatedly removed them. Clear those before creating the one copy the
-        // administrator actually asked for.
-        int removed = plugin.diaryStore().removeAllPendingDeliveriesByDiaryId(record.diaryId());
+        // purge repeatedly removed them. Remove only open entries so delivered audit
+        // history is preserved.
+        int removed = 0;
+        for (DeliveryEntry entry : plugin.diaryStore().getDeliveryEntries()) {
+            String entryDiaryId = plugin.diaryService().getDiaryId(entry.delivery().item());
+            if (record.diaryId().equals(entryDiaryId)
+                    && entry.delivery().lifecycle() != DeliveryLifecycle.DELIVERED
+                    && plugin.diaryStore().cancelDelivery(entry.delivery().token())) {
+                removed++;
+            }
+        }
         plugin.diaryStore().flushIfDirty();
 
         ItemStack snapshot = record.snapshot();
