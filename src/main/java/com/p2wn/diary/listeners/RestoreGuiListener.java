@@ -739,9 +739,10 @@ public final class RestoreGuiListener implements Listener {
                             text("Stops the operation without restoring a copy.", NamedTextColor.GRAY),
                             click("Click to review")
                     )));
-        } else if (operation.state() == PurgeState.CANCELLED && !operation.restorationOccurred()) {
+        } else if ((operation.state() == PurgeState.CANCELLED || operation.state() == PurgeState.FAILED)
+                && !operation.restorationOccurred()) {
             inventory.setItem(22, button(Material.CLOCK,
-                    title("Resume Cancelled Purge", NamedTextColor.YELLOW),
+                    title("Resume " + pretty(operation.state().name()) + " Purge", NamedTextColor.YELLOW),
                     List.of(text("Restarts this retained operation.", NamedTextColor.GRAY), click("Click to resume"))));
         }
 
@@ -767,7 +768,8 @@ public final class RestoreGuiListener implements Listener {
         if (operation == null) {
             return;
         }
-        if (slot == 20 || (slot == 22 && operation.state() == PurgeState.CANCELLED)) {
+        if (slot == 20 || (slot == 22
+                && (operation.state() == PurgeState.CANCELLED || operation.state() == PurgeState.FAILED))) {
             boolean changed = plugin.diaryPurgeService().resume(operationId, player.getName());
             player.sendMessage(changed ? "§aPurge requeued/resumed." : "§cThat purge cannot be resumed from its current state.");
             openPurgeDetail(player, record, operationId);
