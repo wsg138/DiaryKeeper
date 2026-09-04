@@ -19,6 +19,7 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.ItemStack;
@@ -29,7 +30,6 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -95,6 +95,14 @@ public final class RestoreGuiListener implements Listener {
             case PURGES -> handlePurgeListClick(player, holder, slot);
             case PURGE_DETAIL -> handlePurgeDetailClick(player, holder, slot);
             case LOCATIONS -> handleLocationClick(player, holder, slot);
+        }
+    }
+
+    @EventHandler
+    public void onDrag(InventoryDragEvent event) {
+        Inventory top = event.getView().getTopInventory();
+        if (top.getHolder() instanceof Holder) {
+            event.setCancelled(true);
         }
     }
 
@@ -573,6 +581,9 @@ public final class RestoreGuiListener implements Listener {
                 return;
             }
             Bukkit.getScheduler().runTask(plugin, () -> {
+                if (!player.isOnline()) {
+                    return;
+                }
                 if (failure == null && Boolean.TRUE.equals(changed)) {
                     plugin.deliveryService().requestDelivery(entry.playerId());
                     player.sendMessage("§aDelivery reset and queued for another attempt.");
@@ -597,6 +608,9 @@ public final class RestoreGuiListener implements Listener {
                 return;
             }
             Bukkit.getScheduler().runTask(plugin, () -> {
+                if (!player.isOnline()) {
+                    return;
+                }
                 if (failure == null && Boolean.TRUE.equals(changed)) {
                     player.sendMessage(delivered
                             ? "§aDelivery marked delivered."
@@ -627,6 +641,9 @@ public final class RestoreGuiListener implements Listener {
                 return;
             }
             Bukkit.getScheduler().runTask(plugin, () -> {
+                if (!player.isOnline()) {
+                    return;
+                }
                 long cancelled = futures.stream()
                         .filter(CompletableFuture::isDone)
                         .filter(future -> !future.isCompletedExceptionally())

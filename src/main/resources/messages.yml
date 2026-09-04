@@ -50,6 +50,7 @@ restore:
   admin-player-only: "&cOnly an in-game admin can use the admin restore destination."
   gui-opened: "&eRestore confirmation opened."
   duplicate-started: "&cWarning: an additional diary copy was intentionally restored without purging existing copies."
+  duplicate-blocked: "&cCannot create an extra diary copy while a purge is active. Finish or cancel that purge first, or use the in-game emergency recovery action."
 
 purge:
   usage: "&cUsage: /diary purge <player|diaryId|status|cancel|resume|list>"

@@ -271,8 +271,10 @@ public final class DiaryCommand implements CommandExecutor, TabCompleter {
 
         String mode = args[2].toLowerCase(Locale.ROOT);
         if ("duplicate".equals(mode)) {
-            plugin.diaryPurgeService().restoreDuplicate(record, sender instanceof Player player ? player : null);
-            sender.sendMessage(plugin.configManager().msg("restore.duplicate-started"));
+            boolean queued = plugin.diaryPurgeService().restoreDuplicate(
+                    record, sender instanceof Player player ? player : null);
+            sender.sendMessage(plugin.configManager().msg(
+                    queued ? "restore.duplicate-started" : "restore.duplicate-blocked"));
             return true;
         }
         if ("admin".equals(mode) && !(sender instanceof Player)) {
