@@ -1,0 +1,55 @@
+name: Release Self Review
+
+on:
+  push:
+    branches:
+      - review/recovery-release
+
+permissions:
+  contents: write
+
+jobs:
+  review-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: review/recovery-release
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Apply reviewed hardening
+        run: python .github/release_review_patch.py
+
+      - name: Full Maven verification
+        run: mvn -B clean verify
+
+      - name: Inspect built plugin
+        shell: bash
+        run: |
+          test -f target/DiaryKeeper-1.4.9.jar
+          unzip -t target/DiaryKeeper-1.4.9.jar
+          echo '--- plugin.yml from JAR ---'
+          unzip -p target/DiaryKeeper-1.4.9.jar plugin.yml | head -30
+          echo '--- SHA-256 ---'
+          sha256sum target/DiaryKeeper-1.4.9.jar
+
+      - name: Commit reviewed source
+        shell: bash
+        run: |
+          git config user.name "P2wn"
+          git config user.email "racecarboy77@gmail.com"
+          git add pom.xml src/main/java src/main/resources src/test/java
+          git commit -m "Harden diary recovery after self-review [skip ci]"
+          git push origin HEAD:review/recovery-release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DiaryKeeper-1.4.9
+          path: target/DiaryKeeper-1.4.9.jar
+          if-no-files-found: error
+          retention-days: 7
