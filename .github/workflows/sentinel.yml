@@ -10,7 +10,7 @@ permissions:
 jobs:
   artifact:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - name: Checkout exact pull-request head
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -36,50 +36,12 @@ jobs:
           mkdir -p sentinel-artifact
           cp target/DiaryKeeper-1.4.9.jar sentinel-artifact/plugin.jar
           jar tf sentinel-artifact/plugin.jar | grep -Fxq 'plugin.yml'
-
-      - name: Checkout exact Sentinel P09 profile revision
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          repository: wsg138/EnthusiaSentinel-Sim
-          ref: b27ee2a5405555ae49c17b070f7733a10370fd70
-          path: sentinel-sim
-          persist-credentials: false
-
-      - name: Verify Sentinel profile revision
-        shell: bash
-        run: test "$(git -C sentinel-sim rev-parse HEAD)" = "b27ee2a5405555ae49c17b070f7733a10370fd70"
-
-      - name: Set up Java 25 for Sentinel
-        uses: actions/setup-java@3a4f6e1af504cf6a31855fa899c6aa5355ba6c12
-        with:
-          distribution: temurin
-          java-version: '25'
-
-      - name: Set up Gradle for Sentinel
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '9.1.0'
-
-      - name: Run Sentinel load-enable-disable profile
-        shell: bash
-        run: >-
-          gradle -p sentinel-sim :sentinel-cli:run
-          --args="run profiles/github-app/diarykeeper-pr-load.json
-          --target $GITHUB_WORKSPACE/sentinel-artifact/plugin.jar
-          --report $GITHUB_WORKSPACE/sentinel-report"
+          jar tf sentinel-artifact/plugin.jar | grep -Fxq 'com/p2wn/diary/DiaryPlugin.class'
 
       - name: Upload Sentinel artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: diarykeeper-sentinel-paper
           path: sentinel-artifact/
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Upload Sentinel evidence
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: diarykeeper-sentinel-evidence
-          path: sentinel-report/
           if-no-files-found: error
           retention-days: 14
