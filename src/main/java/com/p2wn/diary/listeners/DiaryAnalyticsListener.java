@@ -26,21 +26,25 @@ public final class DiaryAnalyticsListener implements Listener {
 
     @EventHandler
     public void onDiaryReceived(DiaryReceivedEvent event) {
+        plugin.diaryStore().markIssued(event.getPlayer().getUniqueId());
         recordPlayerEvent(DiaryAnalyticsEventType.INITIAL_ISSUE, event.getPlayer().getUniqueId(), event.getPlayer().getName(), event.getDiary(), "first join");
     }
 
     @EventHandler
     public void onDiaryObtained(DiaryObtainedEvent event) {
+        plugin.diaryStore().recordGroundPickup(event.getPlayer().getUniqueId());
         recordPlayerEvent(DiaryAnalyticsEventType.DIARY_OBTAINED, event.getPlayer().getUniqueId(), event.getPlayer().getName(), event.getDiary(), "picked up");
     }
 
     @EventHandler
     public void onDiaryVoidReturn(DiaryVoidReturnEvent event) {
+        plugin.diaryStore().recordVoidReturn(event.getPlayer().getUniqueId());
         recordPlayerEvent(DiaryAnalyticsEventType.VOID_RETURN, event.getPlayer().getUniqueId(), event.getPlayer().getName(), event.getDiary(), "returned to inventory");
     }
 
     @EventHandler
     public void onDiaryFilled(DiaryFilledEvent event) {
+        plugin.diaryStore().recordDiaryEdit(event.getPlayer().getUniqueId());
         recordPlayerEvent(DiaryAnalyticsEventType.DIARY_EDITED, event.getPlayer().getUniqueId(), event.getPlayer().getName(), event.getDiary(), "edited");
     }
 
@@ -62,6 +66,7 @@ public final class DiaryAnalyticsListener implements Listener {
 
     @EventHandler
     public void onContainerAttempt(DiaryContainerAttemptEvent event) {
+        plugin.diaryStore().recordContainerAttempt(event.getPlayer().getUniqueId());
         recordPlayerEvent(
                 DiaryAnalyticsEventType.BLOCKED_CONTAINER,
                 event.getPlayer().getUniqueId(),
@@ -74,6 +79,9 @@ public final class DiaryAnalyticsListener implements Listener {
     @EventHandler
     public void onDestructionAttempt(DiaryDestructionAttemptEvent event) {
         UUID ownerUuid = plugin.diaryItem().getOwner(event.getItem().getItemStack());
+        if (ownerUuid != null) {
+            plugin.diaryStore().recordDestructionAttempt(ownerUuid);
+        }
         plugin.diaryAnalyticsStore().record(
                 DiaryAnalyticsEventType.PROTECTED_DESTRUCTION,
                 ownerUuid,

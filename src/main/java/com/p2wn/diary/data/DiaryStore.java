@@ -34,11 +34,15 @@ import java.util.concurrent.ExecutionException;
 
 public final class DiaryStore {
 
+    private static final long UNSET_ISSUED_AT = 0L;
+
     public enum DurableQueueResult { SAVED, ALREADY_QUEUED, SAVE_FAILED, PLUGIN_DISABLED }
 
     private static final class PlayerRecord {
         private String diaryId;
         private Long issuedAt;
+        private DiaryAdvancementEvidence advancementEvidence = DiaryAdvancementEvidence.EMPTY;
+        private boolean advancementEvidenceInitialized;
         private final Deque<PendingDelivery> pendingDeliveries = new ArrayDeque<>();
         private final Deque<PendingRemoval> pendingRemovals = new ArrayDeque<>();
     }
@@ -67,6 +71,8 @@ public final class DiaryStore {
     private final Set<String> diaryIdsWithActiveLocations = new HashSet<>();
 
     private String lastWorldUid;
+    // Exclusive analytics cutoff, persisted atomically with the current world UUID.
+    private long advancementEvidenceResetAfter;
     private boolean dirty;
     private int dirtyVersion;
     private boolean saveQueued;
@@ -94,6 +100,7 @@ public final class DiaryStore {
 
         FileConfiguration data = YamlConfiguration.loadConfiguration(file);
         lastWorldUid = data.getString("lastWorldUid");
+        advancementEvidenceResetAfter = Math.max(0L, data.getLong("advancementEvidenceResetAfter", 0L));
 
         loadPlayers(data.getConfigurationSection("players"));
         loadIdentities(data.getConfigurationSection("identities"));
@@ -137,7 +144,13 @@ public final class DiaryStore {
         }
     }
 
+    public long getAdvancementEvidenceResetAfter() {
+        return advancementEvidenceResetAfter;
+    }
+
     public void resetAllPlayers() {
+        // Analytics timestamps have second precision; exclude the ambiguous reset second.
+        advancementEvidenceResetAfter = Math.max(advancementEvidenceResetAfter, Instant.now().getEpochSecond());
         records.clear();
         diaryRecords.clear();
         purgeOperations.clear();
@@ -165,15 +178,96 @@ public final class DiaryStore {
 
     public void markIssued(UUID playerId) {
         PlayerRecord record = getOrCreateRecord(playerId);
+        boolean changed = false;
         if (record.issuedAt == null) {
             record.issuedAt = Instant.now().getEpochSecond();
-            markDirty();
+            changed = true;
         }
+        DiaryAdvancementEvidence next = record.advancementEvidence.withReceived();
+        if (!next.equals(record.advancementEvidence) || !record.advancementEvidenceInitialized) {
+            record.advancementEvidence = next;
+            record.advancementEvidenceInitialized = true;
+            changed = true;
+        }
+        if (changed) markDirty();
     }
 
     public long getIssuedAt(UUID playerId) {
         PlayerRecord record = records.get(playerId);
         return record == null || record.issuedAt == null ? 0L : record.issuedAt;
+    }
+
+    public DiaryAdvancementEvidence getAdvancementEvidence(UUID playerId) {
+        PlayerRecord record = records.get(playerId);
+        return record == null ? DiaryAdvancementEvidence.EMPTY : record.advancementEvidence;
+    }
+
+    public void recordDiaryEdit(UUID playerId) {
+        updateAdvancementEvidence(playerId, DiaryAdvancementEvidence::recordEdit);
+    }
+
+    public void recordDestructionAttempt(UUID playerId) {
+        updateAdvancementEvidence(playerId, DiaryAdvancementEvidence::recordDestructionAttempt);
+    }
+
+    public void recordVoidReturn(UUID playerId) {
+        updateAdvancementEvidence(playerId, DiaryAdvancementEvidence::recordVoidReturn);
+    }
+
+    public void recordContainerAttempt(UUID playerId) {
+        updateAdvancementEvidence(playerId, DiaryAdvancementEvidence::recordContainerAttempt);
+    }
+
+    public void recordGroundPickup(UUID playerId) {
+        updateAdvancementEvidence(playerId, DiaryAdvancementEvidence::recordGroundPickup);
+    }
+
+    public void reconcileAdvancementEvidence(Map<UUID, DiaryAdvancementEvidence> imported) {
+        if (imported == null || imported.isEmpty()) {
+            initializeLegacyAdvancementEvidence();
+            return;
+        }
+        boolean changed = false;
+        Set<UUID> players = new HashSet<>(records.keySet());
+        players.addAll(imported.keySet());
+        for (UUID playerId : players) {
+            PlayerRecord record = getOrCreateRecord(playerId);
+            if (record.advancementEvidenceInitialized) continue;
+            DiaryAdvancementEvidence seeded = record.issuedAt == null
+                    ? DiaryAdvancementEvidence.EMPTY
+                    : DiaryAdvancementEvidence.EMPTY.withReceived();
+            seeded = seeded.max(imported.get(playerId));
+            record.advancementEvidence = seeded;
+            record.advancementEvidenceInitialized = true;
+            changed = true;
+        }
+        if (changed) markDirty();
+    }
+
+    private void initializeLegacyAdvancementEvidence() {
+        boolean changed = false;
+        for (PlayerRecord record : records.values()) {
+            if (record.advancementEvidenceInitialized) continue;
+            record.advancementEvidence = record.issuedAt == null
+                    ? DiaryAdvancementEvidence.EMPTY
+                    : DiaryAdvancementEvidence.EMPTY.withReceived();
+            record.advancementEvidenceInitialized = true;
+            changed = true;
+        }
+        if (changed) markDirty();
+    }
+
+    private void updateAdvancementEvidence(
+            UUID playerId,
+            java.util.function.UnaryOperator<DiaryAdvancementEvidence> update
+    ) {
+        PlayerRecord record = getOrCreateRecord(playerId);
+        DiaryAdvancementEvidence next = update.apply(record.advancementEvidence);
+        if (!next.equals(record.advancementEvidence) || !record.advancementEvidenceInitialized) {
+            record.advancementEvidence = next;
+            record.advancementEvidenceInitialized = true;
+            markDirty();
+        }
     }
 
     public void queueDelivery(UUID playerId, DeliveryReason reason, ItemStack item) {
@@ -1020,6 +1114,7 @@ public final class DiaryStore {
     private SaveSnapshot createSnapshot() throws IOException {
         FileConfiguration data = new YamlConfiguration();
         data.set("lastWorldUid", lastWorldUid);
+        data.set("advancementEvidenceResetAfter", advancementEvidenceResetAfter);
 
         for (Map.Entry<UUID, PlayerRecord> entry : records.entrySet()) {
             String playerKey = entry.getKey().toString();
@@ -1030,6 +1125,16 @@ public final class DiaryStore {
             }
             if (record.issuedAt != null) {
                 data.set("players." + playerKey + ".issuedAt", record.issuedAt);
+            }
+            if (record.advancementEvidenceInitialized) {
+                DiaryAdvancementEvidence evidence = record.advancementEvidence;
+                String base = "players." + playerKey + ".advancements.";
+                data.set(base + "received", evidence.received());
+                data.set(base + "edits", evidence.edits());
+                data.set(base + "destructionAttempts", evidence.destructionAttempts());
+                data.set(base + "voidReturns", evidence.voidReturns());
+                data.set(base + "containerAttempts", evidence.containerAttempts());
+                data.set(base + "groundPickups", evidence.groundPickups());
             }
             int deliveryIndex = 0;
             for (PendingDelivery delivery : record.pendingDeliveries) {
@@ -1191,11 +1296,31 @@ public final class DiaryStore {
             }
             PlayerRecord record = getOrCreateRecord(uuid);
             record.diaryId = players.getString(key + ".id");
-            long issuedAt = players.getLong(key + ".issuedAt", 0L);
-            if (issuedAt > 0L) {
+            long issuedAt = players.getLong(key + ".issuedAt", UNSET_ISSUED_AT);
+            if (issuedAt > UNSET_ISSUED_AT) {
                 record.issuedAt = issuedAt;
             }
+
+            ConfigurationSection advancement = players.getConfigurationSection(key + ".advancements");
+            if (advancement != null) {
+                record.advancementEvidence = readAdvancementEvidence(advancement, issuedAt);
+                record.advancementEvidenceInitialized = true;
+            } else if (issuedAt > UNSET_ISSUED_AT) {
+                record.advancementEvidence = DiaryAdvancementEvidence.EMPTY.withReceived();
+            }
         }
+    }
+
+    private static DiaryAdvancementEvidence readAdvancementEvidence(
+            ConfigurationSection advancement, long issuedAt) {
+        return new DiaryAdvancementEvidence(
+                advancement.getBoolean("received", issuedAt > UNSET_ISSUED_AT),
+                Math.max(0, advancement.getInt("edits", 0)),
+                Math.max(0, advancement.getInt("destructionAttempts", 0)),
+                Math.max(0, advancement.getInt("voidReturns", 0)),
+                Math.max(0, advancement.getInt("containerAttempts", 0)),
+                Math.max(0, advancement.getInt("groundPickups", 0))
+        );
     }
 
     private void loadIdentities(ConfigurationSection section) {
