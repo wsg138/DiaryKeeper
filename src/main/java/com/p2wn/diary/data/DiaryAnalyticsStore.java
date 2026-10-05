@@ -21,6 +21,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 
@@ -129,6 +130,42 @@ public final class DiaryAnalyticsStore {
             return 0L;
         }
         return lastActivityByPlayer.getOrDefault(playerUuid, 0L);
+    }
+
+    /**
+     * Builds a one-time migration summary from retained analytics. This is only
+     * used for players whose dedicated advancement evidence has not been initialized.
+     */
+    public Map<UUID, DiaryAdvancementEvidence> advancementEvidenceSummary() {
+        return advancementEvidenceSummary(0L);
+    }
+
+    /** Reconciliation excludes pre-reset and same-second ambiguous history, not the audit log itself. */
+    public Map<UUID, DiaryAdvancementEvidence> advancementEvidenceSummary(long resetAfterEpochSeconds) {
+        Map<UUID, DiaryAdvancementEvidence> summary = new ConcurrentHashMap<>();
+        for (DiaryAnalyticsEvent event : events) {
+            if (event.occurredAt() <= resetAfterEpochSeconds) continue;
+            UUID playerId = event.playerUuid();
+            if (playerId == null) continue;
+            DiaryAdvancementEvidence current =
+                    summary.getOrDefault(playerId, DiaryAdvancementEvidence.EMPTY);
+            summary.put(playerId, applyAdvancementEvent(current, event));
+        }
+        return Map.copyOf(summary);
+    }
+
+    private static DiaryAdvancementEvidence applyAdvancementEvent(
+            DiaryAdvancementEvidence current, DiaryAnalyticsEvent event) {
+        return switch (event.type()) {
+            case INITIAL_ISSUE, ADMIN_ISSUE -> current.withReceived();
+            case DIARY_EDITED -> "edited".equalsIgnoreCase(event.detail())
+                    ? current.recordEdit() : current;
+            case DIARY_OBTAINED -> current.recordGroundPickup();
+            case VOID_RETURN -> current.recordVoidReturn();
+            case BLOCKED_CONTAINER -> current.recordContainerAttempt();
+            case PROTECTED_DESTRUCTION -> current.recordDestructionAttempt();
+            default -> current;
+        };
     }
 
     public void flushIfDirty() {

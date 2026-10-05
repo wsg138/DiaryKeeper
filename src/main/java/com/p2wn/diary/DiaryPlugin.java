@@ -79,8 +79,11 @@ public final class DiaryPlugin extends JavaPlugin {
         activeDiaryAnalyticsStore.setPerformanceMonitor(activePerformanceMonitor);
         activeDiaryAnalyticsStore.load();
         activeDiaryAnalyticsStore.reloadAutosave();
-
         handleWorldReset();
+        activeDiaryStore.reconcileAdvancementEvidence(
+                activeDiaryAnalyticsStore.advancementEvidenceSummary(
+                        activeDiaryStore.getAdvancementEvidenceResetAfter()));
+        activeDiaryStore.flushNowBlocking("advancement evidence migration");
 
         activeDiaryItem = new DiaryItem(this, activeConfigManager, activeDiaryStore, activeDiaryKeys);
         activeWelcomeBookItem = new WelcomeBookItem(this);

@@ -1,0 +1,46 @@
+name: DiaryKeeper verification
+on:
+  push:
+    branches-ignore: ['test-jars-*']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: DiaryKeeper-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact checkout
+        env:
+          EXPECTED: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED"
+      - uses: actions/setup-java@d7793b545071e98d581d3bf084a51c3213318a07
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Clean build and verification
+        run: mvn -B -ntp clean verify
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: DiaryKeeper-test-reports-${{ github.event.pull_request.head.sha || github.sha }}
+          path: target/surefire-reports/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload verified testing artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: DiaryKeeper-test-jar-${{ github.event.pull_request.head.sha || github.sha }}
+          path: target/*.jar
+          if-no-files-found: error
+          retention-days: 14
