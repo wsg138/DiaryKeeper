@@ -1065,7 +1065,7 @@ public final class DiaryStore {
                 encodeWarmItem(warmupQueue.removeFirst());
                 if (System.nanoTime() - started >= WARMUP_NANOS_PER_TICK) break;
             }
-        } catch (IOException ex) {
+        } catch (IOException | RuntimeException ex) {
             stopWarmup();
             plugin.getLogger().warning("Diary autosave item encoding failed: " + ex.getMessage());
             return;
@@ -1178,7 +1178,7 @@ public final class DiaryStore {
         SaveSnapshot snapshot;
         try {
             snapshot = createSnapshot();
-        } catch (IOException ex) {
+        } catch (IOException | RuntimeException ex) {
             if (performanceMonitor != null) {
                 performanceMonitor.yamlSaveFailed();
             }
@@ -1272,7 +1272,7 @@ public final class DiaryStore {
         SaveSnapshot snapshot;
         try {
             snapshot = createSnapshot();
-        } catch (IOException ex) {
+        } catch (IOException | RuntimeException ex) {
             if (performanceMonitor != null) {
                 performanceMonitor.yamlSaveFailed();
             }

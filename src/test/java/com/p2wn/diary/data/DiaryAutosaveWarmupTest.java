@@ -72,6 +72,34 @@ class DiaryAutosaveWarmupTest {
     }
 
     @Test
+    void runtimeEncoderFailureAllowsPeriodicAutosaveRetry() {
+        Harness harness = new Harness(directory);
+        harness.store.updateTrackedSnapshot(DIARY_ID, UUID.randomUUID(), OWNER_NAME, item(1));
+        harness.rejectEncode.set(true);
+        harness.fireAutosave();
+        harness.fireWarmup();
+        assertEquals(0, harness.saves.get());
+        harness.rejectEncode.set(false);
+        harness.fireAutosave();
+        harness.fireWarmup();
+        assertEquals(1, harness.saves.get());
+        assertEquals("1", harness.lastSnapshot.get().getString("trackedDiaries.diary.snapshotBase64"));
+    }
+
+    @Test
+    void runtimeEncoderFailureDoesNotMarkDurableFlushSuccessful() {
+        Harness harness = new Harness(directory);
+        harness.store.updateTrackedSnapshot(DIARY_ID, UUID.randomUUID(), OWNER_NAME, item(1));
+        harness.rejectEncode.set(true);
+        assertThrows(java.util.concurrent.CompletionException.class, () -> harness.store.flushDurably().join());
+        assertEquals(0, harness.saves.get());
+        harness.rejectEncode.set(false);
+        harness.store.flushDurably();
+        harness.runAsync();
+        assertEquals(1, harness.saves.get());
+    }
+
+    @Test
     void rejectedAsyncSchedulingDoesNotStickAndCanBeRetried() {
         Harness harness = new Harness(directory);
         UUID owner = UUID.randomUUID();
@@ -206,6 +234,7 @@ class DiaryAutosaveWarmupTest {
         private final AtomicInteger encodingCount = new AtomicInteger();
         private final AtomicInteger saves = new AtomicInteger();
         private final java.util.concurrent.atomic.AtomicBoolean rejectAsync = new java.util.concurrent.atomic.AtomicBoolean();
+        private final java.util.concurrent.atomic.AtomicBoolean rejectEncode = new java.util.concurrent.atomic.AtomicBoolean();
         private final AtomicReference<FileConfiguration> lastSnapshot = new AtomicReference<>();
         private final Deque<Runnable> scheduledAsync = new ArrayDeque<>();
         private final Deque<Runnable> scheduledMain = new ArrayDeque<>();
@@ -243,6 +272,7 @@ class DiaryAutosaveWarmupTest {
                 return mock(BukkitTask.class);
             });
             SnapshotItemCache cache = new SnapshotItemCache(item -> {
+                if (rejectEncode.get()) throw new IllegalStateException("injected encoder exception");
                 encodingCount.incrementAndGet();
                 return Integer.toString(item.getAmount());
             });

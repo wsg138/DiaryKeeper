@@ -33,8 +33,9 @@ therefore appear as sporadic slow ticks despite the asynchronous disk write.
   save finishes before the next one is written; a durable retry is dispatched back
   to the Bukkit server thread after an asynchronous completion. An interrupted
   blocking wait does **not** race the still-running writer.
-- Encoding and write failures leave the data marked dirty; they are logged and
-  can be retried. Failure to schedule an async writer also clears its busy state.
+- Checked and unchecked encoding failures leave data marked dirty; the warmup
+  task is cancelled so the next autosave can retry. Write errors are logged and
+  retryable. Failure to schedule an async writer also clears its busy state.
 
 **Compatibility:** No `diaries.yml` schema change, no new required configuration
 and no change to retention settings. Existing `itemBase64` values remain
