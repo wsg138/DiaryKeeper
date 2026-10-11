@@ -14,6 +14,8 @@ mvn clean test
 
 Surefire XML and text reports are written under `target/surefire-reports/`. The repository's Sentinel workflow is separate evidence for exact-head plugin artifact production; it does not replace the unit/integration tests described here.
 
+For the autosave codec benchmark run `mvn -Dtest=DiarySnapshotBenchmarkTest test`; see [autosave persistence and rollout](AUTOSAVE-PERSISTENCE.md) for its synthetic methodology and limitations.
+
 ## What the automated suite currently protects
 
 The suite has direct regression evidence for:

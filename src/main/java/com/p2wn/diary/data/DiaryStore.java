@@ -35,8 +35,18 @@ import java.util.concurrent.ExecutionException;
 public final class DiaryStore {
 
     private static final long UNSET_ISSUED_AT = 0L;
+    private static final int WARMUP_ITEMS_PER_TICK = 4;
+    private static final long WARMUP_NANOS_PER_TICK = 1_500_000L;
+    private static final long SLOW_SNAPSHOT_NANOS = 20_000_000L;
+
+    private enum WarmItemKind { TRACKED, DELIVERY, PURGE }
+    private record WarmItem(WarmItemKind kind, String diaryId, UUID playerId, UUID token) { }
 
     public enum DurableQueueResult { SAVED, ALREADY_QUEUED, SAVE_FAILED, PLUGIN_DISABLED }
+
+    record SnapshotMetrics(int playerRecords, int trackedRecords, int deliveryRecords,
+                           int purgeRecords, long elapsedNanos, long encodingNanos,
+                           long cacheHits, long encodings) { }
 
     private static final class PlayerRecord {
         private String diaryId;
@@ -59,6 +69,7 @@ public final class DiaryStore {
     private final Plugin plugin;
     private final File file;
     private final PersistenceWriter persistenceWriter;
+    private final SnapshotItemCache itemCache;
     private final Object stateLock = new Object();
     private final Object fileSaveLock = new Object();
     private final Map<UUID, PlayerRecord> records = new HashMap<>();
@@ -78,23 +89,32 @@ public final class DiaryStore {
     private boolean saveQueued;
     private CompletableFuture<Void> runningSave;
     private BukkitTask autosaveTask;
+    private BukkitTask warmupTask;
+    private final Deque<WarmItem> warmupQueue = new ArrayDeque<>();
     private PerformanceMonitor performanceMonitor;
     private long lastPruneAt;
+    private SnapshotMetrics recentSnapshotMetrics;
 
     public DiaryStore(Plugin plugin) {
         this(plugin, null);
     }
 
     DiaryStore(Plugin plugin, PersistenceWriter persistenceWriter) {
+        this(plugin, persistenceWriter, new SnapshotItemCache());
+    }
+
+    DiaryStore(Plugin plugin, PersistenceWriter persistenceWriter, SnapshotItemCache itemCache) {
         this.plugin = plugin;
         this.file = new File(plugin.getDataFolder(), "diaries.yml");
         this.persistenceWriter = persistenceWriter;
+        this.itemCache = Objects.requireNonNull(itemCache);
     }
 
     public void load() {
         records.clear();
         diaryRecords.clear();
         purgeOperations.clear();
+        itemCache.clear();
         lastWorldUid = null;
         dirty = false;
 
@@ -115,12 +135,16 @@ public final class DiaryStore {
         pendingDeliveryIdsMigrated = migratePendingDeliveryIds();
     }
 
+    SnapshotMetrics lastSnapshotMetrics() {
+        return recentSnapshotMetrics;
+    }
+
     public void reloadAutosave() {
         stopAutosave();
         int interval = Math.max(20, plugin.getConfig().getInt("storage.save-interval-ticks", 1200));
         autosaveTask = plugin.getServer().getScheduler().runTaskTimer(plugin, () -> {
             pruneRetainedState();
-            flushIfDirty();
+            autosaveWithWarmup();
         }, interval, interval);
     }
 
@@ -154,6 +178,7 @@ public final class DiaryStore {
         records.clear();
         diaryRecords.clear();
         purgeOperations.clear();
+        itemCache.clear();
         markDirty();
     }
 
@@ -287,6 +312,7 @@ public final class DiaryStore {
         if (record.pendingDeliveries.stream().anyMatch(delivery -> deliveryId.equals(delivery.token()))) {
             return false;
         }
+        itemCache.invalidateDelivery(playerId, deliveryId);
         record.pendingDeliveries.addLast(new PendingDelivery(reason, item, deliveryId));
         markDirty();
         return true;
@@ -659,7 +685,10 @@ public final class DiaryStore {
         if (ownerName != null && !ownerName.isBlank()) {
             state.ownerName = ownerName;
         }
-        state.snapshot = snapshot.clone();
+        if (state.snapshot == null || !state.snapshot.equals(snapshot)) {
+            state.snapshot = snapshot.clone();
+            itemCache.invalidateTracked(diaryId);
+        }
         state.snapshotUpdatedAt = Instant.now().getEpochSecond();
         state.location = location;
         if (location != null) {
@@ -711,7 +740,10 @@ public final class DiaryStore {
         if (ownerName != null && !ownerName.isBlank()) {
             state.ownerName = ownerName;
         }
-        state.snapshot = snapshot.clone();
+        if (state.snapshot == null || !state.snapshot.equals(snapshot)) {
+            state.snapshot = snapshot.clone();
+            itemCache.invalidateTracked(diaryId);
+        }
         state.snapshotUpdatedAt = Instant.now().getEpochSecond();
         markDirty();
     }
@@ -829,6 +861,7 @@ public final class DiaryStore {
 
     public void addPurgeOperation(PurgeOperation operation) {
         operation.attachDirtyCallback(this::markDirty);
+        itemCache.invalidatePurge(operation.operationId());
         purgeOperations.put(operation.operationId(), operation);
         markDirty();
     }
@@ -979,6 +1012,96 @@ public final class DiaryStore {
         }
     }
 
+    /** Warm cold item encodings across ticks without postponing explicit durable flushes. */
+    private void autosaveWithWarmup() {
+        if (!isDirtyAndIdle() || warmupTask != null) return;
+        findMissingEncodings();
+        if (warmupQueue.isEmpty()) {
+            flushNow();
+            return;
+        }
+        warmupTask = plugin.getServer().getScheduler().runTaskTimer(
+                plugin, this::warmupTick, 1L, 1L);
+    }
+
+    private void findMissingEncodings() {
+        warmupQueue.clear();
+        for (Map.Entry<String, DiaryRecordState> entry : diaryRecords.entrySet()) {
+            if (entry.getValue().snapshot != null && !itemCache.hasTracked(entry.getKey())) {
+                warmupQueue.addLast(new WarmItem(WarmItemKind.TRACKED, entry.getKey(), null, null));
+            }
+        }
+        records.forEach((playerId, record) -> {
+            for (PendingDelivery delivery : record.pendingDeliveries) {
+                if (!itemCache.hasDelivery(playerId, delivery.token())) {
+                    warmupQueue.addLast(new WarmItem(WarmItemKind.DELIVERY, null, playerId, delivery.token()));
+                }
+            }
+        });
+        for (PurgeOperation operation : purgeOperations.values()) {
+            if (!itemCache.hasPurge(operation.operationId()) && operation.snapshot() != null) {
+                warmupQueue.addLast(new WarmItem(WarmItemKind.PURGE, null, null, operation.operationId()));
+            }
+        }
+    }
+
+    private void warmupTick() {
+        long started = System.nanoTime();
+        try {
+            for (int count = 0; count < WARMUP_ITEMS_PER_TICK && !warmupQueue.isEmpty(); count++) {
+                encodeWarmItem(warmupQueue.removeFirst());
+                if (System.nanoTime() - started >= WARMUP_NANOS_PER_TICK) break;
+            }
+        } catch (IOException ex) {
+            stopWarmup();
+            plugin.getLogger().warning("Diary autosave item encoding failed: " + ex.getMessage());
+            return;
+        }
+        if (!warmupQueue.isEmpty()) return;
+        findMissingEncodings();
+        if (warmupQueue.isEmpty()) {
+            stopWarmup();
+            if (isDirtyAndIdle()) flushNow();
+        }
+    }
+
+    private void encodeWarmItem(WarmItem target) throws IOException {
+        switch (target.kind()) {
+            case TRACKED -> {
+                DiaryRecordState state = diaryRecords.get(target.diaryId());
+                if (state != null && state.snapshot != null) {
+                    itemCache.tracked(target.diaryId(), state.snapshot);
+                }
+            }
+            case PURGE -> {
+                PurgeOperation operation = purgeOperations.get(target.token());
+                if (operation != null && operation.snapshot() != null) {
+                    itemCache.purge(target.token(), operation.snapshot());
+                }
+            }
+            case DELIVERY -> warmDelivery(target);
+        }
+    }
+
+    private void warmDelivery(WarmItem target) throws IOException {
+        PlayerRecord record = records.get(target.playerId());
+        if (record == null) return;
+        for (PendingDelivery delivery : record.pendingDeliveries) {
+            if (Objects.equals(delivery.token(), target.token())) {
+                itemCache.delivery(target.playerId(), delivery.token(), delivery.item());
+                return;
+            }
+        }
+    }
+
+    private void stopWarmup() {
+        if (warmupTask != null) {
+            warmupTask.cancel();
+            warmupTask = null;
+        }
+        warmupQueue.clear();
+    }
+
     public void pruneRetainedState() {
         long now = Instant.now().getEpochSecond();
         if (now - lastPruneAt < 3600L) {
@@ -1028,6 +1151,7 @@ public final class DiaryStore {
     }
 
     public void flushNow() {
+        stopWarmup();
         synchronized (stateLock) {
             if (!dirty) {
                 countSaveSkipped();
@@ -1063,7 +1187,21 @@ public final class DiaryStore {
             performanceMonitor.yamlSaveQueued();
             performanceMonitor.yamlSaveRunning(1);
         }
-        plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> saveSnapshot(snapshot, future, false));
+        try {
+            plugin.getServer().getScheduler().runTaskAsynchronously(
+                    plugin, () -> saveSnapshot(snapshot, future, false));
+        } catch (RuntimeException ex) {
+            synchronized (stateLock) {
+                saveQueued = false;
+                if (Objects.equals(runningSave, future)) runningSave = null;
+            }
+            if (performanceMonitor != null) {
+                performanceMonitor.yamlSaveRunning(0);
+                performanceMonitor.yamlSaveFailed();
+            }
+            plugin.getLogger().warning("Unable to schedule diaries.yml save: " + ex.getMessage());
+            future.completeExceptionally(ex);
+        }
     }
 
     /**
@@ -1076,7 +1214,7 @@ public final class DiaryStore {
                 return CompletableFuture.completedFuture(null);
             }
             if (runningSave != null) {
-                return runningSave.thenCompose(ignored -> flushDurably());
+                return resumeDurableFlush(runningSave);
             }
         }
         flushNow();
@@ -1089,7 +1227,24 @@ public final class DiaryStore {
         }
     }
 
+    private CompletableFuture<Void> resumeDurableFlush(CompletableFuture<Void> current) {
+        return current.thenCompose(ignored -> {
+            CompletableFuture<Void> result = new CompletableFuture<>();
+            try {
+                plugin.getServer().getScheduler().runTask(plugin, () ->
+                        flushDurably().whenComplete((value, error) -> {
+                            if (error == null) result.complete(null);
+                            else result.completeExceptionally(error);
+                        }));
+            } catch (IllegalStateException ex) {
+                result.completeExceptionally(ex);
+            }
+            return result;
+        });
+    }
+
     public void flushNowBlocking(String reason) {
+        stopWarmup();
         waitForRunningSave(reason);
         synchronized (stateLock) {
             if (!dirty) {
@@ -1112,7 +1267,12 @@ public final class DiaryStore {
     }
 
     private SaveSnapshot createSnapshot() throws IOException {
+        long started = System.nanoTime();
+        long encodedBefore = itemCache.encodingNanos();
+        long hitsBefore = itemCache.hits();
+        long missesBefore = itemCache.misses();
         FileConfiguration data = new YamlConfiguration();
+        Set<SnapshotItemCache.DeliveryKey> liveDeliveryTokens = new HashSet<>();
         data.set("lastWorldUid", lastWorldUid);
         data.set("advancementEvidenceResetAfter", advancementEvidenceResetAfter);
 
@@ -1140,7 +1300,8 @@ public final class DiaryStore {
             for (PendingDelivery delivery : record.pendingDeliveries) {
                 String basePath = "pendingDeliveries." + playerKey + "." + deliveryIndex++;
                 data.set(basePath + ".reason", delivery.reason().name());
-                data.set(basePath + ".itemBase64", ItemIO.toBase64(delivery.item()));
+                data.set(basePath + ".itemBase64", itemCache.delivery(entry.getKey(), delivery.token(), delivery.item()));
+                if (delivery.token() != null) liveDeliveryTokens.add(new SnapshotItemCache.DeliveryKey(entry.getKey(), delivery.token()));
                 data.set(basePath + ".token", delivery.token() == null ? null : delivery.token().toString());
                 data.set(basePath + ".lifecycle", delivery.lifecycle().name());
                 data.set(basePath + ".createdAt", delivery.createdAt());
@@ -1173,7 +1334,7 @@ public final class DiaryStore {
             String basePath = "trackedDiaries." + diaryId;
             data.set(basePath + ".ownerUuid", state.ownerUuid == null ? null : state.ownerUuid.toString());
             data.set(basePath + ".ownerName", state.ownerName);
-            data.set(basePath + ".snapshotBase64", state.snapshot == null ? null : ItemIO.toBase64(state.snapshot));
+            data.set(basePath + ".snapshotBase64", state.snapshot == null ? null : itemCache.tracked(diaryId, state.snapshot));
             data.set(basePath + ".snapshotUpdatedAt", state.snapshotUpdatedAt);
             if (state.location != null) {
                 ConfigurationSection locationSection = data.createSection(basePath + ".location");
@@ -1189,6 +1350,19 @@ public final class DiaryStore {
             writePurgeOperation(data, operation);
         }
 
+        itemCache.retain(diaryRecords.keySet(), liveDeliveryTokens, purgeOperations.keySet());
+        recentSnapshotMetrics = new SnapshotMetrics(records.size(), diaryRecords.size(),
+                liveDeliveryTokens.size(), purgeOperations.size(), System.nanoTime() - started,
+                itemCache.encodingNanos() - encodedBefore,
+                itemCache.hits() - hitsBefore, itemCache.misses() - missesBefore);
+        if (recentSnapshotMetrics.elapsedNanos() >= SLOW_SNAPSHOT_NANOS) {
+            plugin.getLogger().warning("Slow diary snapshot: players=" + recentSnapshotMetrics.playerRecords()
+                    + " tracked=" + recentSnapshotMetrics.trackedRecords()
+                    + " deliveries=" + recentSnapshotMetrics.deliveryRecords()
+                    + " purges=" + recentSnapshotMetrics.purgeRecords()
+                    + " elapsedMs=" + recentSnapshotMetrics.elapsedNanos() / 1_000_000L
+                    + " encodings=" + recentSnapshotMetrics.encodings());
+        }
         return new SaveSnapshot(data, currentDirtyVersion());
     }
 
@@ -1253,18 +1427,21 @@ public final class DiaryStore {
         synchronized (stateLock) {
             future = runningSave;
         }
-        if (future == null) {
-            return;
-        }
+        if (future == null) return;
         plugin.getLogger().info("Waiting for running diaries.yml async save before " + reason + " flush.");
-        try {
-            future.get();
-        } catch (InterruptedException ex) {
-            Thread.currentThread().interrupt();
-            plugin.getLogger().warning("Interrupted while waiting for diaries.yml async save before " + reason + ".");
-        } catch (ExecutionException ex) {
-            plugin.getLogger().warning("diaries.yml async save failed before " + reason + ": " + ex.getMessage());
+        boolean interrupted = false;
+        while (true) {
+            try {
+                future.get();
+                break;
+            } catch (InterruptedException ex) {
+                interrupted = true;
+            } catch (ExecutionException ex) {
+                plugin.getLogger().warning("diaries.yml async save failed before " + reason + ": " + ex.getMessage());
+                break;
+            }
         }
+        if (interrupted) Thread.currentThread().interrupt();
     }
 
     private boolean isDirtyAndIdle() {
@@ -1540,7 +1717,7 @@ public final class DiaryStore {
         data.set(base + ".state", operation.state().name());
         data.set(base + ".startedAt", operation.startedAt());
         data.set(base + ".completedAt", operation.completedAt());
-        data.set(base + ".snapshotBase64", operation.snapshot() == null ? null : ItemIO.toBase64(operation.snapshot()));
+        data.set(base + ".snapshotBase64", operation.snapshot() == null ? null : itemCache.purge(operation.operationId(), operation.snapshot()));
         data.set(base + ".onlinePlayersScanned", operation.onlinePlayersScanned());
         data.set(base + ".loadedChunksScanned", operation.loadedChunksScanned());
         data.set(base + ".pendingDeliveriesRemoved", operation.pendingDeliveriesRemoved());
@@ -1688,6 +1865,7 @@ public final class DiaryStore {
     }
 
     private void stopAutosave() {
+        stopWarmup();
         if (autosaveTask != null) {
             autosaveTask.cancel();
             autosaveTask = null;
