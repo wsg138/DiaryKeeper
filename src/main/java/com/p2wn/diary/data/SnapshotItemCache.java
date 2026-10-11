@@ -4,7 +4,7 @@ import com.p2wn.diary.util.ItemIO;
 import org.bukkit.inventory.ItemStack;
 
 import java.io.IOException;
-import java.util.HashMap;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -20,11 +20,11 @@ final class SnapshotItemCache {
     }
 
     private final Encoder encoder;
-    private final Map<String, String> trackedEncodings = new HashMap<>();
+    private final Map<String, String> trackedEncodings = new ConcurrentHashMap<>();
     record DeliveryKey(UUID playerId, UUID token) { }
 
-    private final Map<DeliveryKey, String> deliveries = new HashMap<>();
-    private final Map<UUID, String> purges = new HashMap<>();
+    private final Map<DeliveryKey, String> deliveries = new ConcurrentHashMap<>();
+    private final Map<UUID, String> purges = new ConcurrentHashMap<>();
     private long cacheHits;
     private long cacheMisses;
     private long accumulatedEncodeNanos;

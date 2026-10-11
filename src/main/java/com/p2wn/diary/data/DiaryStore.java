@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -89,7 +90,7 @@ public final class DiaryStore {
     private boolean saveQueued;
     private CompletableFuture<Void> runningSave;
     private BukkitTask autosaveTask;
-    private BukkitTask warmupTask;
+    private Optional<BukkitTask> warmupTask = Optional.empty();
     private final Deque<WarmItem> warmupQueue = new ArrayDeque<>();
     private PerformanceMonitor performanceMonitor;
     private long lastPruneAt;
@@ -1014,23 +1015,32 @@ public final class DiaryStore {
 
     /** Warm cold item encodings across ticks without postponing explicit durable flushes. */
     private void autosaveWithWarmup() {
-        if (!isDirtyAndIdle() || warmupTask != null) return;
+        if (!isDirtyAndIdle() || warmupTask.isPresent()) return;
         findMissingEncodings();
         if (warmupQueue.isEmpty()) {
             flushNow();
             return;
         }
-        warmupTask = plugin.getServer().getScheduler().runTaskTimer(
-                plugin, this::warmupTick, 1L, 1L);
+        warmupTask = Optional.of(plugin.getServer().getScheduler().runTaskTimer(
+                plugin, this::warmupTick, 1L, 1L));
     }
 
     private void findMissingEncodings() {
         warmupQueue.clear();
+        findMissingTrackedEncodings();
+        findMissingDeliveryEncodings();
+        findMissingPurgeEncodings();
+    }
+
+    private void findMissingTrackedEncodings() {
         for (Map.Entry<String, DiaryRecordState> entry : diaryRecords.entrySet()) {
             if (entry.getValue().snapshot != null && !itemCache.hasTracked(entry.getKey())) {
                 warmupQueue.addLast(new WarmItem(WarmItemKind.TRACKED, entry.getKey(), null, null));
             }
         }
+    }
+
+    private void findMissingDeliveryEncodings() {
         records.forEach((playerId, record) -> {
             for (PendingDelivery delivery : record.pendingDeliveries) {
                 if (!itemCache.hasDelivery(playerId, delivery.token())) {
@@ -1038,6 +1048,9 @@ public final class DiaryStore {
                 }
             }
         });
+    }
+
+    private void findMissingPurgeEncodings() {
         for (PurgeOperation operation : purgeOperations.values()) {
             if (!itemCache.hasPurge(operation.operationId()) && operation.snapshot() != null) {
                 warmupQueue.addLast(new WarmItem(WarmItemKind.PURGE, null, null, operation.operationId()));
@@ -1080,6 +1093,7 @@ public final class DiaryStore {
                 }
             }
             case DELIVERY -> warmDelivery(target);
+            default -> throw new IllegalStateException("Unknown autosave item kind: " + target.kind());
         }
     }
 
@@ -1095,10 +1109,8 @@ public final class DiaryStore {
     }
 
     private void stopWarmup() {
-        if (warmupTask != null) {
-            warmupTask.cancel();
-            warmupTask = null;
-        }
+        warmupTask.ifPresent(BukkitTask::cancel);
+        warmupTask = Optional.empty();
         warmupQueue.clear();
     }
 
@@ -1187,13 +1199,17 @@ public final class DiaryStore {
             performanceMonitor.yamlSaveQueued();
             performanceMonitor.yamlSaveRunning(1);
         }
+        scheduleSnapshot(snapshot, future);
+    }
+
+    private void scheduleSnapshot(SaveSnapshot snapshot, CompletableFuture<Void> future) {
         try {
             plugin.getServer().getScheduler().runTaskAsynchronously(
                     plugin, () -> saveSnapshot(snapshot, future, false));
         } catch (RuntimeException ex) {
             synchronized (stateLock) {
                 saveQueued = false;
-                if (Objects.equals(runningSave, future)) runningSave = null;
+                if (Objects.equals(runningSave, future)) runningSave = null; // NOPMD: rejected schedule must allow retry
             }
             if (performanceMonitor != null) {
                 performanceMonitor.yamlSaveRunning(0);

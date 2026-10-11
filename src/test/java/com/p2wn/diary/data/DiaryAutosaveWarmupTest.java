@@ -23,6 +23,7 @@ import static org.mockito.Mockito.*;
 
 class DiaryAutosaveWarmupTest {
     private static final String OWNER_NAME = "owner";
+    private static final String DIARY_ID = "diary";
     private static final int MAX_WARMUP_TICKS = 2048;
     private static final long WARMUP_PERIOD_TICKS = 1L;
     private static ItemStack item(int amount) {
@@ -71,24 +72,40 @@ class DiaryAutosaveWarmupTest {
     }
 
     @Test
+    void rejectedAsyncSchedulingDoesNotStickAndCanBeRetried() {
+        Harness harness = new Harness(directory);
+        UUID owner = UUID.randomUUID();
+        harness.store.updateTrackedSnapshot(DIARY_ID, owner, OWNER_NAME, item(1));
+        harness.rejectAsync.set(true);
+        assertThrows(java.util.concurrent.CompletionException.class,
+                () -> harness.store.flushDurably().join());
+        assertEquals(0, harness.saves.get());
+        harness.rejectAsync.set(false);
+        harness.store.flushDurably();
+        harness.runAsync();
+        assertEquals(1, harness.saves.get());
+        assertEquals("1", harness.lastSnapshot.get().getString("trackedDiaries.diary.snapshotBase64"));
+    }
+
+    @Test
     void unchangedSnapshotsAndLifecycleChangesReuseEncodingButRealEditsInvalidate() {
         Harness harness = new Harness(directory);
         UUID owner = UUID.randomUUID();
         UUID token = UUID.randomUUID();
         ItemStack first = item(1);
-        harness.store.updateTrackedSnapshot("diary", owner, OWNER_NAME, first);
+        harness.store.updateTrackedSnapshot(DIARY_ID, owner, OWNER_NAME, first);
         harness.store.queueDelivery(owner, DeliveryReason.VOID_RETURN, first, token);
         harness.store.flushDurably();
         harness.runAsync();
         assertEquals(2, harness.encodingCount.get());
 
-        harness.store.updateTrackedSnapshot("diary", owner, OWNER_NAME, first);
+        harness.store.updateTrackedSnapshot(DIARY_ID, owner, OWNER_NAME, first);
         assertTrue(harness.store.claimDelivery(owner, token));
         harness.store.flushDurably();
         harness.runAsync();
         assertEquals(2, harness.encodingCount.get());
 
-        harness.store.updateTrackedSnapshot("diary", owner, OWNER_NAME, item(2));
+        harness.store.updateTrackedSnapshot(DIARY_ID, owner, OWNER_NAME, item(2));
         harness.store.flushDurably();
         harness.runAsync();
         assertEquals(3, harness.encodingCount.get());
@@ -188,6 +205,7 @@ class DiaryAutosaveWarmupTest {
     private static final class Harness {
         private final AtomicInteger encodingCount = new AtomicInteger();
         private final AtomicInteger saves = new AtomicInteger();
+        private final java.util.concurrent.atomic.AtomicBoolean rejectAsync = new java.util.concurrent.atomic.AtomicBoolean();
         private final AtomicReference<FileConfiguration> lastSnapshot = new AtomicReference<>();
         private final Deque<Runnable> scheduledAsync = new ArrayDeque<>();
         private final Deque<Runnable> scheduledMain = new ArrayDeque<>();
@@ -220,6 +238,7 @@ class DiaryAutosaveWarmupTest {
                 return mock(BukkitTask.class);
             });
             when(scheduler.runTaskAsynchronously(eq(plugin), any(Runnable.class))).thenAnswer(call -> {
+                if (rejectAsync.get()) throw new IllegalStateException("injected scheduler rejection");
                 scheduledAsync.addLast(call.getArgument(1));
                 return mock(BukkitTask.class);
             });
