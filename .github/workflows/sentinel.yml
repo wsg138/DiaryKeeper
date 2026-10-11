@@ -32,9 +32,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -f target/DiaryKeeper-1.4.9.jar
+          jars=(target/DiaryKeeper-*.jar)
+          test "${#jars[@]}" -eq 1
+          test -f "${jars[0]}"
           mkdir -p sentinel-artifact
-          cp target/DiaryKeeper-1.4.9.jar sentinel-artifact/plugin.jar
+          cp "${jars[0]}" sentinel-artifact/plugin.jar
           jar tf sentinel-artifact/plugin.jar | grep -Fxq 'plugin.yml'
           jar tf sentinel-artifact/plugin.jar | grep -Fxq 'com/p2wn/diary/DiaryPlugin.class'
 
