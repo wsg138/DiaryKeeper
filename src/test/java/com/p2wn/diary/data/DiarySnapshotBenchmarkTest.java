@@ -25,6 +25,48 @@ class DiarySnapshotBenchmarkTest {
     @TempDir Path directory;
 
     @Test
+    void oneChangedPlayerAtProductionRecordCounts() {
+        Plugin plugin = mock(Plugin.class);
+        Server server = mock(Server.class);
+        BukkitScheduler scheduler = mock(BukkitScheduler.class);
+        when(plugin.getServer()).thenReturn(server);
+        when(server.getScheduler()).thenReturn(scheduler);
+        when(plugin.getDataFolder()).thenReturn(directory.toFile());
+        when(plugin.getLogger()).thenReturn(java.util.logging.Logger.getAnonymousLogger());
+        when(scheduler.runTaskAsynchronously(eq(plugin), any(Runnable.class))).thenAnswer(call -> {
+            call.<Runnable>getArgument(1).run();
+            return null;
+        });
+        // Measure capture only. Cached synthetic payloads isolate the zero-encoding case.
+        DiaryStore store = new DiaryStore(plugin, data -> { }, new SnapshotItemCache(item -> "encoded"));
+        ItemStack item = mock(ItemStack.class);
+        when(item.clone()).thenReturn(item);
+        final int playerCount = 2325;
+        final int trackedCount = 2344;
+        final int deliveryCount = 7;
+        UUID[] owners = java.util.stream.IntStream.range(0, playerCount)
+                .mapToObj(index -> new UUID(0, index)).toArray(UUID[]::new);
+        for (int i = 0; i < trackedCount; i++) {
+            UUID owner = owners[i % playerCount];
+            store.observeIdentity(owner, "owner" + i);
+            store.recordDiaryEdit(owner);
+            store.updateTrackedSnapshot("diary" + i, owner, "owner" + i, item);
+            if (i < deliveryCount) store.queueDelivery(owner, DeliveryReason.VOID_RETURN, item, UUID.randomUUID());
+        }
+        long[] captures = new long[30];
+        for (int i = -5; i < captures.length; i++) {
+            store.recordDiaryEdit(owners[1]);
+            store.flushIfDirty();
+            if (i >= 0) captures[i] = store.lastSnapshotMetrics().elapsedNanos();
+        }
+        assertEquals(playerCount, store.lastSnapshotMetrics().playerRecords());
+        assertEquals(trackedCount, store.lastSnapshotMetrics().trackedRecords());
+        assertEquals(deliveryCount, store.lastSnapshotMetrics().deliveryRecords());
+        assertEquals(0, store.lastSnapshotMetrics().encodings());
+        System.out.println("Production-count synthetic capture p50/p95/p99 ms=" + percentiles(captures));
+    }
+
+    @Test
     void repeatedUnchangedSavesReportColdVsCachedPercentiles() {
         Plugin plugin = mock(Plugin.class);
         Server server = mock(Server.class);

@@ -12,7 +12,9 @@ therefore appear as sporadic slow ticks despite the asynchronous disk write.
 
 - Unchanged items have a cached Base64 encoding, scoped by tracked diary ID,
   **player plus delivery token**, or purge operation ID. Cache values are created
-  only by the normal Bukkit codec on the main thread. The persisted YAML keys,
+  by the normal Bukkit codec on the main thread or restored from an item payload
+  that the codec successfully decoded at load. Legacy items without a payload
+  use the normal encoding path. The persisted YAML keys,
   item encoding, and file paths are **unchanged**.
 - Tracked snapshots are privately cloned. Repeated identical observations retain
   their previous snapshot and encoding; actual item changes invalidate the cache.
@@ -25,6 +27,10 @@ therefore appear as sporadic slow ticks despite the asynchronous disk write.
   being encoded cannot be interrupted, so very large items may still cause a
   slow tick. One in-memory work queue is used and it is bounded by current state.
   If new items arrive while warming, the next sweep includes them.
+- Snapshot capture copies player, identity and tracked-diary fields into private
+  rows. The save worker builds their YAML sections from those rows. Delivery,
+  removal and purge metadata are still captured into the private YAML tree on
+  the server thread. A blocking flush performs both stages before it returns.
 - Explicit `flushDurably()`, blocking shutdown, and administrative writes **do
   not wait for warmup**: they may serialize a cold set synchronously to preserve
   the existing durability contract. Lifecycle metadata changes reuse cached

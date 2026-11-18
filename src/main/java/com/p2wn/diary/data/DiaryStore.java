@@ -1288,6 +1288,9 @@ public final class DiaryStore {
         long hitsBefore = itemCache.hits();
         long missesBefore = itemCache.misses();
         FileConfiguration data = new YamlConfiguration();
+        List<PlayerRow> players = new ArrayList<>(records.size());
+        List<IdentityRow> owners = new ArrayList<>(identities.size());
+        List<TrackedRow> tracked = new ArrayList<>(diaryRecords.size());
         Set<SnapshotItemCache.DeliveryKey> liveDeliveryTokens = new HashSet<>();
         data.set("lastWorldUid", lastWorldUid);
         data.set("advancementEvidenceResetAfter", advancementEvidenceResetAfter);
@@ -1296,22 +1299,8 @@ public final class DiaryStore {
             String playerKey = entry.getKey().toString();
             PlayerRecord record = entry.getValue();
 
-            if (record.diaryId != null) {
-                data.set("players." + playerKey + ".id", record.diaryId);
-            }
-            if (record.issuedAt != null) {
-                data.set("players." + playerKey + ".issuedAt", record.issuedAt);
-            }
-            if (record.advancementEvidenceInitialized) {
-                DiaryAdvancementEvidence evidence = record.advancementEvidence;
-                String base = "players." + playerKey + ".advancements.";
-                data.set(base + "received", evidence.received());
-                data.set(base + "edits", evidence.edits());
-                data.set(base + "destructionAttempts", evidence.destructionAttempts());
-                data.set(base + "voidReturns", evidence.voidReturns());
-                data.set(base + "containerAttempts", evidence.containerAttempts());
-                data.set(base + "groundPickups", evidence.groundPickups());
-            }
+            players.add(new PlayerRow(playerKey, record.diaryId, record.issuedAt,
+                    record.advancementEvidenceInitialized, record.advancementEvidence));
             int deliveryIndex = 0;
             for (PendingDelivery delivery : record.pendingDeliveries) {
                 String basePath = "pendingDeliveries." + playerKey + "." + deliveryIndex++;
@@ -1336,30 +1325,15 @@ public final class DiaryStore {
         }
 
         for (PlayerIdentity identity : identities.values()) {
-            String base = "identities." + identity.uuid();
-            data.set(base + ".name", identity.currentName());
-            data.set(base + ".aliases", identity.aliases().stream().toList());
-            data.set(base + ".lastSeen", identity.lastSeen());
-            data.set(base + ".xuid", identity.xuid());
-            data.set(base + ".platform", identity.platform());
+            owners.add(new IdentityRow(identity.uuid(), identity.currentName(), List.copyOf(identity.aliases()),
+                    identity.lastSeen(), identity.xuid(), identity.platform()));
         }
-
-        for (Map.Entry<String, DiaryRecordState> entry : diaryRecords.entrySet()) {
-            String diaryId = entry.getKey();
+        for (var entry : diaryRecords.entrySet()) {
+            String id = entry.getKey();
             DiaryRecordState state = entry.getValue();
-            String basePath = "trackedDiaries." + diaryId;
-            data.set(basePath + ".ownerUuid", state.ownerUuid == null ? null : state.ownerUuid.toString());
-            data.set(basePath + ".ownerName", state.ownerName);
-            data.set(basePath + ".snapshotBase64", state.snapshot == null ? null : itemCache.tracked(diaryId, state.snapshot));
-            data.set(basePath + ".snapshotUpdatedAt", state.snapshotUpdatedAt);
-            if (state.location != null) {
-                ConfigurationSection locationSection = data.createSection(basePath + ".location");
-                state.location.writeTo(locationSection);
-            }
-            for (int i = 0; i < state.locations.size(); i++) {
-                ConfigurationSection locationSection = data.createSection(basePath + ".locations." + i);
-                state.locations.get(i).writeTo(locationSection);
-            }
+            String encoded = state.snapshot == null ? null : itemCache.tracked(id, state.snapshot);
+            tracked.add(new TrackedRow(id, state.ownerUuid, state.ownerName, encoded, state.snapshotUpdatedAt,
+                    state.location, List.copyOf(state.locations)));
         }
 
         for (PurgeOperation operation : purgeOperations.values()) {
@@ -1377,14 +1351,16 @@ public final class DiaryStore {
                     + " deliveries=" + recentSnapshotMetrics.deliveryRecords()
                     + " purges=" + recentSnapshotMetrics.purgeRecords()
                     + " elapsedMs=" + recentSnapshotMetrics.elapsedNanos() / 1_000_000L
+                    + " encodingMs=" + recentSnapshotMetrics.encodingNanos() / 1_000_000L
                     + " encodings=" + recentSnapshotMetrics.encodings());
         }
-        return new SaveSnapshot(data, currentDirtyVersion());
+        return new SaveSnapshot(data, players, owners, tracked, currentDirtyVersion());
     }
 
     private void saveSnapshot(SaveSnapshot snapshot, CompletableFuture<Void> future, boolean blocking) {
         boolean success = false;
         try {
+            snapshot.populateRows();
             if (persistenceWriter == null) {
                 writeAtomically(snapshot.data());
             } else {
@@ -1549,8 +1525,10 @@ public final class DiaryStore {
                     ItemStack item = readItem(pending, basePath + ".itemBase64", basePath + ".item");
                     if (item != null) {
                         long createdAt = pending.getLong(basePath + ".createdAt", file.lastModified() / 1000L);
+                        UUID token = parseUuid(pending.getString(basePath + ".token"));
+                        itemCache.restoreDelivery(uuid, token, pending.getString(basePath + ".itemBase64"));
                         record.pendingDeliveries.addLast(new PendingDelivery(parseReason(rawReason), item,
-                                parseUuid(pending.getString(basePath + ".token")), parseEnum(DeliveryLifecycle.class,
+                                token, parseEnum(DeliveryLifecycle.class,
                                 pending.getString(basePath + ".lifecycle"), DeliveryLifecycle.QUEUED), createdAt,
                                 pending.getLong(basePath + ".claimedAt", 0L),
                                 pending.getLong(basePath + ".deliveredAt", 0L),
@@ -1606,6 +1584,7 @@ public final class DiaryStore {
             state.ownerUuid = parseUuid(section.getString("ownerUuid"));
             state.ownerName = section.getString("ownerName");
             state.snapshot = readItem(section, "snapshotBase64", "snapshot");
+            if (state.snapshot != null) itemCache.restoreTracked(diaryId, section.getString("snapshotBase64"));
             state.snapshotUpdatedAt = section.getLong("snapshotUpdatedAt", 0L);
             ConfigurationSection locationSection = section.getConfigurationSection("location");
             if (locationSection != null) {
@@ -1841,6 +1820,7 @@ public final class DiaryStore {
             operation.setVerificationRemovedBaseline(section.getInt("verificationRemovedBaseline"));
             operation.setVerificationGeneration(section.getInt("verificationGeneration"));
             operation.attachDirtyCallback(this::markDirty);
+            if (snapshot != null) itemCache.restorePurge(operationId, section.getString("snapshotBase64"));
             purgeOperations.put(operationId, operation);
         }
     }
@@ -1959,7 +1939,61 @@ public final class DiaryStore {
         return section.getItemStack(legacyPath);
     }
 
-    private record SaveSnapshot(FileConfiguration data, int version) {}
+    // These rows contain only immutable values. The writer owns the YAML tree after capture.
+    private record SaveSnapshot(FileConfiguration data, List<PlayerRow> players, List<IdentityRow> owners,
+                                List<TrackedRow> tracked, int version) {
+        void populateRows() {
+            players.forEach(row -> row.write(data));
+            owners.forEach(row -> row.write(data));
+            tracked.forEach(row -> row.write(data));
+        }
+    }
+
+    private record PlayerRow(String key, String id, Long issuedAt, boolean hasEvidence,
+                             DiaryAdvancementEvidence evidence) {
+        void write(FileConfiguration data) {
+            if (id == null && issuedAt == null && !hasEvidence) return;
+            var section = data.createSection("players." + key);
+            section.set("id", id);
+            section.set("issuedAt", issuedAt);
+            if (hasEvidence) {
+                var advancement = section.createSection("advancements");
+                advancement.set("received", evidence.received());
+                advancement.set("edits", evidence.edits());
+                advancement.set("destructionAttempts", evidence.destructionAttempts());
+                advancement.set("voidReturns", evidence.voidReturns());
+                advancement.set("containerAttempts", evidence.containerAttempts());
+                advancement.set("groundPickups", evidence.groundPickups());
+            }
+        }
+    }
+
+    private record IdentityRow(UUID uuid, String name, List<String> aliases, long lastSeen,
+                               String xuid, String platform) {
+        void write(FileConfiguration data) {
+            var section = data.createSection("identities." + uuid);
+            section.set("name", name);
+            section.set("aliases", aliases);
+            section.set("lastSeen", lastSeen);
+            section.set("xuid", xuid);
+            section.set("platform", platform);
+        }
+    }
+
+    private record TrackedRow(String id, UUID owner, String name, String encoded, long updatedAt,
+                              DiaryLocationRecord location, List<DiaryLocationRecord> locations) {
+        void write(FileConfiguration data) {
+            var section = data.createSection("trackedDiaries." + id);
+            section.set("ownerUuid", owner == null ? null : owner.toString());
+            section.set("ownerName", name);
+            section.set("snapshotBase64", encoded);
+            section.set("snapshotUpdatedAt", updatedAt);
+            if (location != null) location.writeTo(section.createSection("location"));
+            for (int i = 0; i < locations.size(); i++) {
+                locations.get(i).writeTo(section.createSection("locations." + i));
+            }
+        }
+    }
 
     @FunctionalInterface
     interface PersistenceWriter {

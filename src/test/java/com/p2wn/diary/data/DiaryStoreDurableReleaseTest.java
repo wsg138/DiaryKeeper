@@ -25,6 +25,28 @@ class DiaryStoreDurableReleaseTest {
     @TempDir Path temp;
 
     @Test
+    void delayedWriterSeesPlayerAndIdentityAsTheyWereAtCapture() {
+        try (Fixture f = new Fixture(temp)) {
+            f.store.observeIdentity(f.player, "before");
+            f.store.recordDiaryEdit(f.player);
+            var first = f.store.flushDurably();
+            f.store.observeIdentity(f.player, "after");
+            f.store.recordDiaryEdit(f.player);
+            f.runAsync();
+            first.join();
+            String identity = "identities." + f.player + ".name";
+            String edits = "players." + f.player + ".advancements.edits";
+            assertEquals("before", f.writer.lastData.getString(identity));
+            assertEquals(1, f.writer.lastData.getInt(edits));
+            var second = f.store.flushDurably();
+            f.runAsync();
+            second.join();
+            assertEquals("after", f.writer.lastData.getString(identity));
+            assertEquals(2, f.writer.lastData.getInt(edits));
+        }
+    }
+
+    @Test
     void successfulReleaseDoesNotExposeRetryUntilQueuedSnapshotIsDurable() {
         try (Fixture f = new Fixture(temp)) {
             f.persistClaim();
@@ -204,10 +226,12 @@ class DiaryStoreDurableReleaseTest {
     private static final class RecordingWriter implements DiaryStore.PersistenceWriter {
         int failuresRemaining;
         String lastLifecycle;
+        FileConfiguration lastData;
 
         @Override
         public void write(FileConfiguration data) throws IOException {
             if (failuresRemaining-- > 0) throw new IOException("injected save failure");
+            lastData = data;
             lastLifecycle = data.getString("pendingDeliveries."
                     + data.getConfigurationSection("pendingDeliveries").getKeys(false).iterator().next()
                     + ".0.lifecycle");

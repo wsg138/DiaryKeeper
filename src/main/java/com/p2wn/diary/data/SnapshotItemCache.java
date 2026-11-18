@@ -68,6 +68,19 @@ final class SnapshotItemCache {
         return encoded;
     }
 
+    // Called only after the corresponding payload has decoded successfully.
+    void restoreTracked(String id, String encoded) {
+        if (encoded != null && !encoded.isBlank()) trackedEncodings.put(id, encoded);
+    }
+
+    void restoreDelivery(UUID player, UUID token, String encoded) {
+        if (token != null && encoded != null && !encoded.isBlank()) deliveries.putIfAbsent(new DeliveryKey(player, token), encoded);
+    }
+
+    void restorePurge(UUID id, String encoded) {
+        if (encoded != null && !encoded.isBlank()) purges.put(id, encoded);
+    }
+
     boolean hasTracked(String id) {
         return trackedEncodings.containsKey(id);
     }
